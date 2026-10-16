@@ -688,7 +688,7 @@ class BillTab:
         self.name = name
         self.edit_bill_id = None     # set when editing a finalized bill
         self.customer = None         # customer row dict
-        self.payment_type = ""       # Cash / UPI / Credit (required)
+        self.payment_type = "Cash"   # Cash / UPI / Credit (Cash default)
         self.price_mode = "wholesale"
         self.items = []              # dicts: product_id,name,unit,qty,price,
         self.bill_discount = 0.0
