@@ -34,7 +34,6 @@ def today_iso():
 
 
 def fnum(widget, default=0.0):
-    """Read a float from an entry widget safely."""
     try:
         return float(widget.get().strip() or default)
     except ValueError:
@@ -42,7 +41,6 @@ def fnum(widget, default=0.0):
 
 
 def tree(parent, columns, widths=None, height=12):
-    """ttk.Treeview with headings, packed in a frame. Returns (frame, tree)."""
     frame = ctk.CTkFrame(parent)
     tv = ttk.Treeview(frame, columns=columns, show="headings", height=height)
     for i, c in enumerate(columns):
@@ -56,7 +54,6 @@ def tree(parent, columns, widths=None, height=12):
 
 
 class SearchPicker(ctk.CTkToplevel):
-    """Search-as-you-type popup: pick a product or customer from a list."""
 
     def __init__(self, master, title, fetch_fn, display_fn, on_pick):
         super().__init__(master)
@@ -185,12 +182,18 @@ class App(ctk.CTk):
         self.screens[key] = screen
 
     def open_billing_tab(self, **kwargs):
-        """Jump to Billing and open a fresh tab (used by Invoices edit)."""
         self.show("billing")
         self.screens["billing"].new_tab(**kwargs)
 
     def on_close(self):
-        self.db.close()
+        try:
+            auto_backup_on_exit(self.db)
+        except Exception:
+            pass
+        try:
+            self.db.close()
+        except Exception:
+            pass
         self.destroy()
 
 
@@ -318,7 +321,6 @@ class ProductsFrame(ctk.CTkFrame):
         return int(sel[0])
 
     def product_dialog(self, product=None):
-        """Modal add/edit form. Returns dict or None."""
         win = ctk.CTkToplevel(self)
         win.title("Edit product" if product else "Add product")
         win.geometry("480x620")
@@ -525,7 +527,6 @@ class StockFrame(ctk.CTkFrame):
             text=f"Total stock value: {money(self.db.stock_value())}")
 
     def move_dialog(self, direction):
-        """Stock IN or OUT for one product."""
         win = ctk.CTkToplevel(self)
         win.title("Stock IN" if direction == "in" else "Stock OUT")
         win.geometry("420x400")
@@ -579,7 +580,6 @@ class StockFrame(ctk.CTkFrame):
 
 
 class BillTab:
-    """In-memory state for one open bill tab."""
 
     def __init__(self, name):
         self.name = name
@@ -627,7 +627,6 @@ class BillingFrame(ctk.CTkFrame):
         self.new_tab()
 
     def pick_customer_current(self):
-        """F4 — open the customer picker for the current tab."""
         cur = self.current()
         if cur:
             pick = cur[1].get("pick_customer")
@@ -635,13 +634,11 @@ class BillingFrame(ctk.CTkFrame):
                 pick()
 
     def focus_search(self):
-        """F3 — jump to the product search box of the current tab."""
         cur = self.current()
         if cur:
             cur[1]["prod_e"].focus_set()
 
     def clear_line_inputs(self):
-        """Esc — clear the current product/qty/discount entry row."""
         cur = self.current()
         if not cur:
             return
@@ -1049,7 +1046,6 @@ class BillingFrame(ctk.CTkFrame):
         return taxable * (1 + it["gst_percent"] / 100)
 
     def _low_stock(self, it):
-        """True if this line leaves stock at/below the low-stock threshold."""
         if not it.get("product_id"):
             return False
         try:
@@ -1180,12 +1176,6 @@ class BillingFrame(ctk.CTkFrame):
         return card
 
     def _commit_card_field(self, tab, w, idx, qty_e, rate_e, disc_e):
-        """Apply quick-edit qty/rate/discount typed into a card.
-
-        Bad input reverts to the stored values. On a real change the card's
-        total + low-stock badge and the footer totals are updated IN PLACE
-        (no card rebuild), so keyboard focus is never stolen while typing
-        or tabbing between fields."""
         try:
             if idx >= len(tab.items):
                 return
@@ -1217,7 +1207,6 @@ class BillingFrame(ctk.CTkFrame):
             self._update_totals_footer(tab, w)
 
     def _refresh_card_line(self, tab, w, idx):
-        """Refresh one card's line total and low-stock badge in place."""
         f = (w.get("card_fields") or {}).get(idx)
         if not f or idx >= len(tab.items):
             return
@@ -1241,10 +1230,6 @@ class BillingFrame(ctk.CTkFrame):
             pass
 
     def _card_focus_out(self, tab, w, idx, qty_e, rate_e, disc_e, entry):
-        """FocusOut on a card field: commit, then restore its border.
-
-        Skips entirely if the entry was already destroyed (e.g. the cards
-        were re-rendered for another reason) so this can never recurse."""
         try:
             if not entry.winfo_exists():
                 return
@@ -1259,14 +1244,11 @@ class BillingFrame(ctk.CTkFrame):
             pass
 
     def _commit_and_focus(self, tab, w, idx, qty_e, rate_e, disc_e, nxt):
-        """Enter on a card field: commit, then jump to the next field."""
         self._commit_card_field(tab, w, idx, qty_e, rate_e, disc_e)
         self._focus_card_field(tab, w, idx, nxt)
         return "break"
 
     def _focus_card_field(self, tab, w, idx, which):
-        """Move keyboard focus: qty / rate / disc card fields, or 'prod'
-        to jump back to the product search for the next line."""
         if which == "prod":
             try:
                 w["prod_e"].focus_set()
@@ -1296,7 +1278,6 @@ class BillingFrame(ctk.CTkFrame):
                 pass
 
     def _flash_card(self, w, idx):
-        """Briefly highlight a card (used when a duplicate merges into it)."""
         cards = w.get("card_widgets", [])
         if idx >= len(cards):
             return
@@ -1316,7 +1297,6 @@ class BillingFrame(ctk.CTkFrame):
         self._update_totals_footer(tab, w)
 
     def _update_totals_footer(self, tab, w):
-        """Recompute the sticky totals footer only (no card rebuild)."""
         try:
             t = tab.totals(self.db)
         except Exception:
@@ -1379,7 +1359,6 @@ class BillingFrame(ctk.CTkFrame):
         self.app.show("dashboard")
 
     def offer_print_after_save(self, bill_id, msg):
-        """'Bill saved. Print invoice?' — honors the remembered choice."""
         mode = self.db.get_setting("print_on_save", "ask")
         if mode == "skip":
             return
@@ -1407,9 +1386,6 @@ class BillingFrame(ctk.CTkFrame):
                                 f"{pmsg}\n\nPDF saved at:\n{path}")
 
     def _tab_bill_preview(self, tab):
-        """Build (bill_dict, items) in DB-row shape for the print preview.
-        Items always come from the tab (including unsaved edits); the header
-        comes from the saved bill when editing, else a DRAFT placeholder."""
         t = tab.totals(self.db)
         if tab.edit_bill_id:
             bill = self.db.get_bill(tab.edit_bill_id)
@@ -1442,8 +1418,6 @@ class BillingFrame(ctk.CTkFrame):
 
 
 class PrintOfferDialog(ctk.CTkToplevel):
-    """'Bill saved. Print invoice?' with Print / Preview / Skip and a
-    'Remember my choice' option (stored in settings -> print_on_save)."""
 
     def __init__(self, app, billing, db, bill_id, msg):
         super().__init__(app)
@@ -1489,10 +1463,6 @@ ACCENTS = {"Green": "#1f6f43", "Blue": "#0b5fa5", "Maroon": "#8f1d17",
 
 
 def render_invoice_preview(container, prof, bill, items, prefs):
-    """Populate `container` with a widget-based invoice preview from the
-    effective prefs. Shared by PrintDialog (real bill) and the Invoice
-    Design screen (sample bill). An approximation of the PDF layout —
-    the PDF is the exact render."""
     for ch in container.winfo_children():
         ch.destroy()
     accent = prefs.get("accent", "#1f6f43") or "#1f6f43"
@@ -1634,9 +1604,6 @@ def render_invoice_preview(container, prof, bill, items, prefs):
 
 
 class PrintDialog(ctk.CTkToplevel):
-    """Choose what the bill shows, pick the printer, tweak notes/colors/paper,
-    live preview, then print the PDF directly (no browser, no extension) or
-    preview it."""
 
     def __init__(self, master, db, bill, items):
         super().__init__(master)
@@ -1758,13 +1725,11 @@ class PrintDialog(ctk.CTkToplevel):
         }
 
     def effective_prefs(self):
-        """Saved invoice-design settings + this dialog's per-print tweaks."""
         prefs = self.db.print_prefs()
         prefs.update(self.current_prefs())
         return prefs
 
     def render_preview(self):
-        """Rebuild the preview from the current preference widgets."""
         render_invoice_preview(self.preview, self.db.shop_profile(),
                                self.bill, self.items, self.effective_prefs())
 
@@ -1791,7 +1756,6 @@ class PrintDialog(ctk.CTkToplevel):
             return "1"
 
     def do_preview(self):
-        """Open the PDF invoice in the default viewer (print by hand)."""
         p = self.effective_prefs()
         try:
             path = invoices.write_invoice_pdf(
@@ -1805,7 +1769,6 @@ class PrintDialog(ctk.CTkToplevel):
             messagebox.showerror("Print", f"Could not build the invoice: {e}")
 
     def do_print(self):
-        """Generate the PDF invoice and send it straight to the printer."""
         p = self.effective_prefs()
         printer = self._printer_choice()
         copies = int(self._copies())
@@ -1851,10 +1814,6 @@ DESIGN_SAMPLE_ITEMS = [
 
 
 class InvoiceDesignFrame(ctk.CTkFrame):
-    """Customize every part of the invoice with an instant live preview.
-
-    The preview renders the REAL PDF when PyMuPDF is available, otherwise
-    a widget approximation (same path the Print dialog uses)."""
 
     def __init__(self, parent, db, app):
         super().__init__(parent, fg_color="transparent")
@@ -2041,7 +2000,6 @@ class InvoiceDesignFrame(ctk.CTkFrame):
         self.refresh_preview()
 
     def collect_prefs(self):
-        """Prefs dict shaped exactly like db.print_prefs()."""
         font_map = {"Compact": "compact", "Standard": "standard",
                     "Large": "large"}
         return {
@@ -2073,9 +2031,6 @@ class InvoiceDesignFrame(ctk.CTkFrame):
         }
 
     def _render_pdf_image(self, prefs, prof):
-        """Render the sample invoice PDF to a CTkImage. None when PyMuPDF
-        is unavailable or rendering fails (caller falls back to the
-        widget preview)."""
         try:
             import fitz  # PyMuPDF — optional
             from PIL import Image
@@ -2578,6 +2533,69 @@ class ReportsFrame(ctk.CTkFrame):
                 t["name"], f"{t['qty']:g} {t['unit']}", money(t["total"])))
 
 
+AUTO_BACKUP_PREFIX = "billbook_auto_backup_"
+AUTO_BACKUP_KEEP = 14
+
+
+def make_backup_zip(db, dest):
+    dest = Path(dest)
+    try:
+        db.conn.commit()
+    except Exception:
+        pass
+    dd = data_dir()
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        if db.path.exists():
+            z.write(db.path, "billbook.db")
+        for sub in ("invoices", "logos"):
+            d = dd / sub
+            if d.is_dir():
+                for f in d.rglob("*"):
+                    if f.is_file():
+                        z.write(f, f"{sub}/{f.relative_to(d)}")
+    return dest
+
+
+def auto_backup_folder(db):
+    custom = (db.get_setting("auto_backup_folder") or "").strip()
+    if custom:
+        return Path(custom)
+    return data_dir() / "backups"
+
+
+def prune_auto_backups(folder, keep=AUTO_BACKUP_KEEP):
+    try:
+        folder = Path(folder)
+        autos = sorted(folder.glob(AUTO_BACKUP_PREFIX + "*.zip"),
+                       key=lambda p: p.name)
+        for old in autos[:max(0, len(autos) - keep)]:
+            try:
+                old.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def auto_backup_on_exit(db):
+    try:
+        if db.get_setting("auto_backup_on_exit", "1") != "1":
+            return None
+        folder = auto_backup_folder(db)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            folder = data_dir() / "backups"
+            folder.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = folder / f"{AUTO_BACKUP_PREFIX}{stamp}.zip"
+        make_backup_zip(db, dest)
+        prune_auto_backups(folder)
+        return dest
+    except Exception:
+        return None
+
+
 class BackupFrame(ctk.CTkFrame):
     def __init__(self, parent, db, app):
         super().__init__(parent, fg_color="transparent")
@@ -2609,6 +2627,38 @@ class BackupFrame(ctk.CTkFrame):
         self.status = ctk.CTkLabel(btns, text="", text_color="gray")
         self.status.pack(side="left", padx=12)
 
+        auto = ctk.CTkFrame(self)
+        auto.pack(fill="x", pady=8)
+        ctk.CTkLabel(auto, text="Automatic backup on exit",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(
+                         anchor="w", padx=12, pady=(10, 2))
+        self.auto_var = ctk.BooleanVar(
+            value=db.get_setting("auto_backup_on_exit", "1") == "1")
+        ctk.CTkCheckBox(
+            auto, text="Back up automatically every time the app closes",
+            variable=self.auto_var, command=self.save_auto_toggle).pack(
+                anchor="w", padx=12, pady=2)
+        frow = ctk.CTkFrame(auto, fg_color="transparent")
+        frow.pack(fill="x", padx=12, pady=(4, 4))
+        ctk.CTkLabel(frow, text="Auto-backup folder:").pack(side="left")
+        self.auto_folder_label = ctk.CTkLabel(
+            frow, text=str(auto_backup_folder(db)), text_color="gray",
+            wraplength=420, justify="left")
+        self.auto_folder_label.pack(side="left", padx=8)
+        ctk.CTkButton(frow, text="Choose folder...", width=130,
+                      command=self.choose_auto_folder).pack(side="left",
+                                                           padx=4)
+        ctk.CTkButton(frow, text="Use default", width=100,
+                      command=self.reset_auto_folder).pack(side="left",
+                                                          padx=4)
+        ctk.CTkLabel(
+            auto,
+            text=f"The last {AUTO_BACKUP_KEEP} automatic backups are kept; "
+                 "older ones are deleted automatically. Manual backups are "
+                 "never deleted.",
+            text_color="gray", wraplength=700, justify="left").pack(
+                anchor="w", padx=12, pady=(0, 10))
+
         ctk.CTkLabel(
             self,
             text="A backup is a single .zip with the database, all saved "
@@ -2621,24 +2671,30 @@ class BackupFrame(ctk.CTkFrame):
             text_color="gray", wraplength=700, justify="left").pack(
                 anchor="w", pady=12)
 
+    def save_auto_toggle(self):
+        self.db.set_setting("auto_backup_on_exit",
+                            "1" if self.auto_var.get() else "0")
+
+    def choose_auto_folder(self):
+        folder = filedialog.askdirectory(title="Choose auto-backup folder")
+        if not folder:
+            return
+        self.db.set_setting("auto_backup_folder", folder)
+        self.auto_folder_label.configure(text=folder)
+
+    def reset_auto_folder(self):
+        self.db.set_setting("auto_backup_folder", "")
+        self.auto_folder_label.configure(text=str(auto_backup_folder(
+            self.db)))
+
     def backup(self):
-        """One-click backup: db + invoice PDFs + logos into a dated zip."""
         folder = filedialog.askdirectory(title="Choose backup folder")
         if not folder:
             return
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dest = Path(folder) / f"billbook_backup_{stamp}.zip"
         try:
-            self.db.conn.commit()
-            dd = data_dir()
-            with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
-                z.write(self.db.path, "billbook.db")
-                for sub in ("invoices", "logos"):
-                    d = dd / sub
-                    if d.is_dir():
-                        for f in d.rglob("*"):
-                            if f.is_file():
-                                z.write(f, f"{sub}/{f.relative_to(d)}")
+            make_backup_zip(self.db, dest)
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("Backup", f"Backup failed:\n{e}")
             return
