@@ -48,6 +48,15 @@ no Chrome extension needed.
     warnings (not popups) flag a missing customer or payment type in the
     sticky totals footer, which always shows subtotal, GST, discount,
     round-off, and the grand total.
+  - **Barcode scan → instant add** — a USB scanner types the barcode + Enter.
+    If the typed text exactly matches a product's SKU/barcode
+    (case-insensitive), the line is added **immediately** with qty 1
+    (merging with the existing line if already on the bill) — no dropdown.
+    Anything else falls back to the normal autocomplete dropdown.
+  - **Repeat last bill** — one button picks a customer and reloads *their*
+    most recent bill's items into a fresh tab at **current** prices (qty as
+    billed), with a note showing which bill it was loaded from. Handy for
+    regular weekly orders.
 - **Product catalog** — name, SKU/barcode, purchase / wholesale / retail
   price, unit (pcs, kg, bag, box, litre…), GST %, stock, low-stock threshold,
   supplier. Add/edit/delete (with validation: name required, numeric prices
@@ -55,12 +64,26 @@ no Chrome extension needed.
   **bulk import/export via CSV** (`sample_products.csv` included with 14
   realistic FMCG rows). The add/edit dialog is keyboard-friendly: it opens
   with the name field focused, **Enter** saves, **Esc** closes.
+- **Purchases (stock in)** — wholesale shops buy stock from suppliers, so
+  there is a dedicated **Purchases** screen: pick or create a supplier (name,
+  phone), enter the date and supplier invoice/ref number, then add items
+  (product picker, qty, purchase cost/unit, GST%). Saving **increases
+  stock**, logs the movement, and sets each product's purchase price to the
+  **weighted average** of old stock and the new lot. Past purchases are
+  listed with a view dialog; deleting one **reverses the stock** (with
+  confirmation). Validates qty > 0 and cost ≥ 0.
 - **Stock management** — dedicated Stock IN screen (qty received, note for
   supplier) and Stock OUT (damage/returns), low-stock alerts, total stock
   value, and a full movement log (audit trail).
 - **Customer ledger (khata)** — per-customer outstanding dues, record
   payments received (reduces dues), dues reminder view, per-customer
   statement (bills + payments).
+  - **Collect payment** — each customer row shows total outstanding; the
+    dialog takes amount, date, mode (**Cash / UPI / Bank**) and a note.
+    The amount **cannot exceed the outstanding dues** (partial payments are
+    fine). Recording prints a small **payment receipt PDF** (A4 + thermal).
+    Outstanding = credit bills − payments received − credit notes, kept
+    consistent in the khata balance.
 - **Invoices (PDF)** — proper GST invoice layout as a **PDF** with GST slab
   breakup (CGST/SGST), shop header, and signature lines. Reprint any past
   bill from the Invoices screen. **Bills stay editable after finalizing**:
@@ -68,6 +91,20 @@ no Chrome extension needed.
   corrected bill — stock and khata are reversed and re-applied, and the edit
   is recorded in bill history. PDFs are saved per bill under
   `billbook_data/invoices/<bill_no>_invoice.pdf` for records.
+- **Sales returns / credit notes** — the Invoices screen has a **Return**
+  button per bill: a dialog lists the bill's items with billed qty and
+  already-returned qty, and you enter the return qty per line (capped so the
+  same item can never be returned twice). Confirming **adds the stock back**,
+  creates a numbered **credit note** (`CN-0001`, …), reduces the customer's
+  khata dues for credit bills, and generates a printable **credit-note PDF**
+  (A4 + thermal, honoring your invoice-design settings).
+- **WhatsApp bill share** — the Invoices screen has a **WhatsApp** button per
+  bill: it builds a text summary (shop name, bill no/date, item lines with
+  qty and amounts, total, payment type, balance due for credit bills) and
+  opens `wa.me/<customer-phone>` with the message ready to send. If the
+  customer has no phone saved, it prompts to add one first. Indian numbers
+  are normalized automatically (10 digits → `91` prefix). No API keys, no
+  extra dependencies.
 - **Universal printing (no browser, no extension)** — invoices print
   **directly** through Windows' print system:
   - The Print dialog lists **all installed printers** in a dropdown (OS
@@ -185,10 +222,13 @@ billbook_data`. After code changes, rebuild with `docker compose build`.
 | File | What it does |
 |---|---|
 | `main.py` | Entry point — loads theme, opens the app window |
-| `db.py` | SQLite schema + all data access: products, customers/khata, bills, bill items, payments, stock movements, bill history, settings; billing math (`compute_totals`) |
+| `db.py` | SQLite schema + all data access: products, customers/khata, bills, bill items, payments, stock movements, bill history, suppliers, purchases, returns/credit notes, settings; billing math (`compute_totals`) |
 | `invoices.py` | Invoice generation as **PDF** (reportlab, A4 + 80mm thermal) + print orchestration: builds the PDF per bill, saves it under `billbook_data/invoices/` |
 | `printing.py` | Universal print engine: PDF rendering, printer enumeration (`win32print` on Windows), direct OS printing via `os.startfile(path, "print")`, graceful PDF-only fallback elsewhere |
-| `ui.py` | All CustomTkinter screens: dashboard, billing (multi-tab), products, stock, customers, invoices, reports, invoice design, backup, settings, print dialog |
+| `ui.py` | Core screens: dashboard, billing (multi-tab), products, stock, customers, invoices, reports, invoice design, backup, settings |
+| `print_ui.py` | Print offer dialog, print settings dialog, invoice live preview, accent palette (split out of `ui.py` to keep modules small) |
+| `purchases_ui.py` | Purchases screen: supplier picker, purchase entry, purchase history |
+| `returns_ui.py` | Sales-return dialog (credit notes) + WhatsApp bill sharing |
 | `backup.py` | Backup engine + Backup & restore screen: manual timestamped zips, restore with safety copy, silent auto-backup on exit with 14-backup retention |
 | `updater.py` | Self-update from GitHub: background latest-commit check, source-ZIP download + staging, `apply_update.bat` generator (copies new files excluding `billbook_data/`, rebuilds the `.exe` after exit, restarts) |
 | `version.txt` | Commit SHA of the running build — written at push/build time; the updater compares it with GitHub's latest |
@@ -203,7 +243,11 @@ billbook_data`. After code changes, rebuild with `docker compose build`.
 - **Bill discount** is a flat ₹ amount applied *after* GST, then the payable
   is rounded to the nearest rupee (round-off line shown on the bill).
 - **Credit** bills add the grand total to the customer's khata balance;
-  recording a payment reduces it.
+  recording a payment reduces it; a credit note (sales return) on a credit
+  bill reduces it too. Outstanding = credit bills − payments − credit notes.
+- **Purchases** increase stock and re-price inventory to the weighted
+  average of old stock and the new lot; deleting a purchase reverses the
+  stock (the averaged cost is left as-is).
 - Finalizing a bill decrements stock and writes stock movements; editing a
   finalized bill reverses the old stock/credit effect first, then re-applies
   the new one, logging everything to bill history.
@@ -215,8 +259,9 @@ billbook_data`. After code changes, rebuild with `docker compose build`.
   unavailable. On the Windows shop PC it uses the OS print path
   (`os.startfile(path, "print")`), which was **not tested against a real
   printer**; verify with one test print on the shop's printer first.
-- No barcode-scanner integration yet — SKU is a text field; a USB scanner
-  that types digits works with the search box, but there's no camera scanning.
+- **Barcode scanning** works with any USB scanner that types the barcode +
+  Enter (instant-add on exact SKU match). There is no *camera* scanning —
+  that would need OpenCV/a camera dependency the shop PC doesn't have.
 - Invoices print via the OS print dialog (spooler), not raw thermal-printer
   ESC/POS commands — fine for A4 and 80mm paper, but no raw-printer control.
 - Single-user, single-PC: SQLite lives in one file; no multi-counter sync.
@@ -361,9 +406,38 @@ custom layouts; and for multiple counters I'd replace SQLite with a small
 local server (e.g. FastAPI + SQLite/Postgres) rather than bolting sync onto
 a file.
 
-**How I'd extend it:** barcode-scanner input mode (USB scanners act as
-keyboards, so it's mostly a "scan → instant add" UX), UPI QR code on the
-invoice for the grand total, per-day cash-register closing (denomination
-count), supplier purchase ledger mirroring the customer khata, and GST
-filing export (GSTR-1 style CSV of outward supplies by slab — the
-`gst_summary` query already computes the needed numbers).
+**How I'd extend it:** UPI QR code on the invoice for the grand total,
+per-day cash-register closing (denomination count), and GST filing export
+(GSTR-1 style CSV of outward supplies by slab — the `gst_summary` query
+already computes the needed numbers). (Barcode scan-to-add and the supplier
+purchase ledger were on this list — both are now built.)
+
+**Shop-floor features (delegated round):** the shop owner asked for "whatever
+a shop needs to make billing easy", so six features were added in one round:
+(1) *Barcode scan → instant add* — USB scanners act as keyboards (barcode +
+Enter), so the billing search checks `find_by_sku()` for an exact
+case-insensitive match on Return *before* the autocomplete path and adds
+qty 1 immediately (merging with the existing line), clearing the field for
+the next scan; non-matches fall through to the dropdown. (2) *Purchases* —
+a new screen + `suppliers`/`purchases`/`purchase_items` tables; saving a
+purchase increases stock and re-prices inventory to the weighted average of
+old and new stock, and deleting a purchase reverses the stock (the averaged
+cost is deliberately left as-is — reversing it exactly would need full lot
+history). (3) *Sales returns* — `returns`/`return_items` tables; per-line
+return qty is capped at billed-minus-already-returned (tracked in
+`return_items`), stock goes back up, credit bills reduce the khata balance,
+and a numbered credit note (`CN-0001`…) prints via a credit-note PDF that
+reuses the invoice Platypus layout with a CREDIT NOTE title. (4) *Dues
+collection* — the khata dialog now takes date + mode (Cash/UPI/Bank, stored
+in a migrated `payments.mode` column), refuses amounts above the
+outstanding dues, and prints a payment-receipt PDF; outstanding stays
+consistent by construction (credit bills add, payments and credit notes
+subtract). (5) *Repeat last bill* — loads the customer's latest bill into a
+fresh tab at current prices with a "loaded from bill X" note, for regular
+weekly orders. (6) *WhatsApp share* — builds a text bill summary and opens
+`wa.me/<normalized-IN-number>?text=…` via `webbrowser` (no API keys);
+missing phone numbers prompt to add one first. To keep `ui.py` under the
+push size limit, the print dialogs moved to `print_ui.py`, purchases to
+`purchases_ui.py`, and returns/WhatsApp to `returns_ui.py` — pure moves plus
+the new code, verified by 25 headless Xvfb tests covering every feature
+end-to-end.
