@@ -12,8 +12,6 @@ The file is opened in the user's default browser (Ctrl+P to print).
 """
 
 import html
-import tempfile
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -188,35 +186,26 @@ def generate_invoice_html(bill, items, profile, prefs):
 </div></body></html>"""
 
 
-def write_invoice_file(bill, items, profile, prefs, dest_dir=None):
-    """Write the invoice HTML to a file, return its path."""
-    html_doc = generate_invoice_html(bill, items, profile, prefs)
-    d = Path(dest_dir) if dest_dir else Path(tempfile.gettempdir())
-    d.mkdir(parents=True, exist_ok=True)
-    fname = f"{bill['bill_no'].replace('/', '-')}_invoice.html"
-    path = d / fname
-    path.write_text(html_doc, encoding="utf-8")
-    return path
+def write_invoice_pdf(bill, items, profile, prefs, dest_dir=None):
+    """Write the invoice PDF (universal printing, no browser needed).
+    Returns the Path of the written file."""
+    from printing import generate_invoice_pdf
+    if dest_dir:
+        safe = str(bill["bill_no"]).replace("/", "-")
+        dest = Path(dest_dir) / f"{safe}_invoice.pdf"
+    else:
+        dest = None
+    return generate_invoice_pdf(bill, items, profile, prefs, dest)
 
 
-def print_bill(bill_id, db_path=None, open_browser=True):
-    """Build the invoice for a saved bill and open it in the default browser."""
-    db = DB(db_path) if db_path else DB()
-    bill = db.get_bill(bill_id)
-    if not bill:
-        raise ValueError("Bill not found")
-    items = db.bill_items(bill_id)
-    # Attach SKU for the item-code toggle
-    for it in items:
-        if it.get("product_id"):
-            p = db.get_product(it["product_id"])
-            it["sku"] = (p or {}).get("sku", "")
-        else:
-            it["sku"] = ""
-    path = write_invoice_file(bill, items, db.shop_profile(),
-                              db.print_prefs())
-    db.log_bill_action(bill_id, "reprinted", f"Invoice opened: {path.name}")
-    db.close()
-    if open_browser:
-        webbrowser.open(path.as_uri())
-    return path
+def print_bill(bill_id, db_path=None, printer=None, copies=1, preview=False):
+    """Build the PDF invoice for a saved bill and print it (Windows) or
+    open it for manual printing anywhere else.
+
+    Returns (pdf_path, printed: bool, message). `printed` is True only
+    when the OS accepted the print job — callers must not claim a print
+    otherwise. Kept import-compatible with the old browser-based flow.
+    """
+    from printing import print_bill_pdf
+    return print_bill_pdf(bill_id, db_path=db_path, printer=printer,
+                          copies=copies, preview=preview)

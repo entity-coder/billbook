@@ -145,6 +145,10 @@ DEFAULT_SETTINGS = {
     "print_show_discounts": "1",
     "print_header_note": "",
     "print_footer_note": "Thank you for your business!",
+    # Print flow
+    "print_on_save": "ask",        # ask / print / preview / skip
+    "print_printer": "",           # "" = OS default printer
+    "print_copies": "1",
     # Bill numbering
     "bill_counter": "1",
     # Theme

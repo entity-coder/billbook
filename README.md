@@ -5,8 +5,10 @@ billing with a saved product catalog, GST invoices you can print, customer
 khata (ledger), stock management, and sales reports — all offline.
 
 Built with **Python + CustomTkinter** (dark mode default, light toggle) and
-**SQLite** (Python stdlib, no server needed). Printing works through
-generated HTML invoices opened in your default browser (Ctrl+P to print).
+**SQLite** (Python stdlib, no server needed). Invoices are generated as
+proper **PDFs** (reportlab) and printed **directly through Windows' own
+print system** — pick any installed printer from a dropdown, no browser and
+no Chrome extension needed.
 
 > **Shop PC note:** this repo ships source code plus a one-click
 > `build_exe.bat`. Run that batch file **once on a Windows PC** to compile
@@ -29,8 +31,15 @@ generated HTML invoices opened in your default browser (Ctrl+P to print).
     automatically (defaults from the customer's type).
   - Per-line GST breakup, round-off to the nearest rupee, sequential bill
     numbers (`BB-0001`, `BB-0002`, …).
-  - Keyboard shortcuts for fast counters: **F2** new bill tab, **Enter**
-    adds a line, **Ctrl+S** finalize, **Ctrl+P** print/preview.
+  - Keyboard shortcuts for fast counters: **F2** new bill tab, **F3** jump to
+    product search, **Enter** adds a line, **+ / −** adjust the selected
+    line's quantity, **Esc** clears the entry row, **Ctrl+S** finalize,
+    **Ctrl+P** print/preview.
+  - **Duplicate products merge** into one line; **low-stock warnings** (⚠)
+    appear on lines that would push stock to/below the threshold; inline
+    warnings (not popups) flag a missing customer or payment type in the
+    sticky totals footer, which always shows subtotal, GST, discount,
+    round-off, and the grand total.
 - **Product catalog** — name, SKU/barcode, purchase / wholesale / retail
   price, unit (pcs, kg, bag, box, litre…), GST %, stock, low-stock threshold,
   supplier. Add/edit/delete, search, **bulk import/export via CSV**
@@ -41,11 +50,24 @@ generated HTML invoices opened in your default browser (Ctrl+P to print).
 - **Customer ledger (khata)** — per-customer outstanding dues, record
   payments received (reduces dues), dues reminder view, per-customer
   statement (bills + payments).
-- **Invoices** — proper GST invoice layout as printable HTML with GST slab
+- **Invoices (PDF)** — proper GST invoice layout as a **PDF** with GST slab
   breakup (CGST/SGST), shop header, and signature lines. Reprint any past
-  bill. **Bills stay editable after finalizing**: reopen a completed bill,
-  change items/quantities/discounts, print the corrected bill — stock and
-  khata are reversed and re-applied, and the edit is recorded in bill history.
+  bill from the Invoices screen. **Bills stay editable after finalizing**:
+  reopen a completed bill, change items/quantities/discounts, print the
+  corrected bill — stock and khata are reversed and re-applied, and the edit
+  is recorded in bill history. PDFs are saved per bill under
+  `billbook_data/invoices/<bill_no>_invoice.pdf` for records.
+- **Universal printing (no browser, no extension)** — invoices print
+  **directly** through Windows' print system:
+  - The Print dialog lists **all installed printers** in a dropdown (OS
+    default pre-selected) plus a copies field.
+  - After every saved bill, a **"Print invoice?"** offer appears (Print /
+    Preview / Skip) with a "Remember my choice" option, so the counter can
+    auto-print every bill.
+  - Print and Preview buttons also live on the billing screen; the Invoices
+    screen reprints any past bill with the same flow.
+  - On non-Windows (or if printing fails), the app honestly opens the PDF
+    for manual printing instead of claiming the job printed.
 - **Print customization** — show/hide GSTIN, item codes, discount column;
   header/footer notes; accent color; **A4 or thermal 80mm** paper; **live
   preview** before printing.
@@ -87,11 +109,12 @@ Data is stored in `billbook_data/billbook.db` next to the source (or next to
 |---|---|
 | `main.py` | Entry point — loads theme, opens the app window |
 | `db.py` | SQLite schema + all data access: products, customers/khata, bills, bill items, payments, stock movements, bill history, settings; billing math (`compute_totals`) |
-| `invoices.py` | Generates the printable GST invoice as standalone HTML honoring shop profile + print preferences; opens it in the default browser |
+| `invoices.py` | Invoice generation as **PDF** (reportlab, A4 + 80mm thermal) + print orchestration: builds the PDF per bill, saves it under `billbook_data/invoices/` |
+| `printing.py` | Universal print engine: PDF rendering, printer enumeration (`win32print` on Windows), direct OS printing via `os.startfile(path, "print")`, graceful PDF-only fallback elsewhere |
 | `ui.py` | All CustomTkinter screens: dashboard, billing (multi-tab), products, stock, customers, invoices, reports, backup, settings, print dialog |
 | `sample_products.csv` | 14 realistic Indian wholesale FMCG rows for demo import |
 | `build_exe.bat` | One-click Windows build (PyInstaller) |
-| `requirements.txt` | `customtkinter` — the only third-party dependency |
+| `requirements.txt` | `customtkinter`, `reportlab` (PDF invoices) |
 
 ## How billing math works
 
@@ -107,16 +130,20 @@ Data is stored in `billbook_data/billbook.db` next to the source (or next to
 
 ## Limitations (honest)
 
+- **Direct printing was developed and tested on Linux only** — the print
+  pipeline degrades gracefully (saves/opens the PDF) where `win32print` is
+  unavailable. On the Windows shop PC it uses the OS print path
+  (`os.startfile(path, "print")`), which was **not tested against a real
+  printer**; verify with one test print on the shop's printer first.
 - No barcode-scanner integration yet — SKU is a text field; a USB scanner
   that types digits works with the search box, but there's no camera scanning.
-- Invoices print via the browser (Ctrl+P), not direct thermal-printer ESC/POS
-  commands — fine for A4 and for 80mm paper through the browser's paper-size
-  setting, but no raw-printer control.
+- Invoices print via the OS print dialog (spooler), not raw thermal-printer
+  ESC/POS commands — fine for A4 and 80mm paper, but no raw-printer control.
 - Single-user, single-PC: SQLite lives in one file; no multi-counter sync.
 - Profit estimate is sale − purchase per line only; it ignores overheads,
   wastage, and purchase-price changes over time.
-- Customer "Walk-in" bills (no saved customer) can't go on credit tracking —
-  dues need a saved customer.
+- Every bill requires a saved customer (walk-in bills must pick one) — dues
+  need a customer record to track against.
 
 ## Interview notes
 
@@ -139,13 +166,29 @@ backup is literally copying a file. The trade-off is no multi-user sync —
 accepted deliberately, because the requirement is one billing counter, and
 complexity that the user can't maintain is a liability, not a feature.
 
-**Why generate invoices as HTML opened in the browser instead of printing
-directly?** Talking to printers from Python (especially thermal printers)
-is platform-specific and fragile. Every PC already has a browser with a
-mature print dialog (margins, paper size, preview). Generating a
-self-contained HTML file with print CSS gives a pixel-faithful GST invoice
-on A4 *and* 80mm thermal with ~60 lines of code and zero driver headaches.
-The honest limitation: no raw ESC/POS control.
+**Why generate invoices as PDF + direct OS printing instead of HTML in the
+browser?** The original build opened a self-contained HTML invoice in the
+browser for Ctrl+P printing. That worked, but it added a manual step at the
+counter and depended on the browser's print dialog every time. The current
+flow renders the same invoice (shop header, GST slabs, totals) to PDF with
+reportlab — A4 and 80mm thermal layouts — and on Windows hands it to the OS
+print spooler via `os.startfile(path, "print")`, with the printer chosen
+from `win32print`'s installed-printer list (temporarily set as default so
+the call targets the right device, then restored). No browser, no Chrome
+extension, no raw ESC/POS driver work. The honest trade-off: direct printing
+was only exercised on Linux in "PDF saved" mode — the Windows print path
+needs one real test print on the shop's printer. And `print_pdf` never claims
+success it didn't get: on failure the app opens the PDF for manual printing.
+
+**Keyboard-first billing UX:** counters bill fast, so the billing screen is
+driven by keys — F2 new tab, F3 focus search, Enter add line, +/− adjust
+selected-line quantity, Esc clear the entry row, Ctrl+S finalize, Ctrl+P
+print. Shortcut hints are printed on the buttons themselves and in a footer
+label. Inline warnings (missing customer / payment type) live in the sticky
+totals footer instead of popping dialogs mid-flow. Small touches with real
+counter value: adding the same product twice merges the line instead of
+duplicating it, and a ⚠ marker appears on lines that would push stock to or
+below the low-stock threshold.
 
 **Key design decisions in the code:**
 - *Billing math lives in one place* (`DB.compute_totals`): line discounts

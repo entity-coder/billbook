@@ -13,7 +13,7 @@ cd /d "%~dp0"
 
 echo Installing dependencies...
 python -m pip install --upgrade pip
-python -m pip install customtkinter pyinstaller
+python -m pip install customtkinter pyinstaller reportlab pywin32
 if errorlevel 1 (
     echo.
     echo ERROR: pip install failed. Check your internet connection and
