@@ -166,6 +166,9 @@ DEFAULT_SETTINGS = {
     "invoice_thankyou_text": "Thank you for your business!",
     "invoice_logo_path": "",
     "invoice_number_prefix": "BB-",
+    # Automatic backup on app exit
+    "auto_backup_on_exit": "1",   # "1" = back up every time the app closes
+    "auto_backup_folder": "",     # "" = default billbook_data/backups/
     # Bill numbering
     "bill_counter": "1",
     # Theme

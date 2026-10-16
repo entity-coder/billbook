@@ -106,6 +106,15 @@ no Chrome extension needed.
   database, and always saves a safety copy of the current data first
   (`billbook_data/backups/auto_before_restore_…db`) — then asks you to
   restart the app.
+- **Automatic backup on exit** — every time the app closes, it silently
+  writes a timestamped backup (`billbook_auto_backup_YYYYMMDD_HHMMSS.zip`,
+  same contents as a manual backup) to the auto-backup folder, then closes
+  normally. It is ON by default; toggle it or change the folder from the
+  **Backup** screen ("Back up automatically every time the app closes" /
+  "Choose folder…"). Default folder is `billbook_data/backups/`. Only the
+  last **14** automatic backups are kept — older ones are deleted, manual
+  backups are never touched. The backup never blocks shutdown: if it fails
+  (disk full, folder unreachable) the app still closes quietly.
 - **Shop profile** — one-time setup for shop name, tagline, address, phone,
   GSTIN — printed on every bill header.
 
@@ -296,6 +305,15 @@ generated numbers — old bills keep theirs.
   never stolen), and remove button. Selection state is a plain index in
   the tab's widget dict; merge-flash is a 500 ms `after()` callback guarded
   by `winfo_exists()` so tab switches can't crash it.
+- *Automatic on-exit backup.* Closing the window (`WM_DELETE_WINDOW`) runs a
+  silent backup first — same zip contents as a manual backup, written to a
+  configurable folder (default `billbook_data/backups/`), with a 14-file
+  retention policy that only prunes files with the auto-backup filename
+  prefix so manual backups are never deleted. The whole path is wrapped so
+  it can never block shutdown: no dialogs, commit failures and missing
+  folders are caught, and a bad custom folder falls back to the default.
+  It's a user setting (`auto_backup_on_exit`), not hardcoded, because the
+  shop owner should be able to turn it off — e.g. on a metered machine.
 
 **Trade-offs / what I'd do differently:** I'd add a proper migration system
 if the schema ever changes (currently `CREATE TABLE IF NOT EXISTS` only);
