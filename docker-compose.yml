@@ -1,0 +1,15 @@
+services:
+  billbook:
+    build: .
+    image: billbook:latest
+    container_name: billbook
+    environment:
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - billbook_data:/app/billbook_data
+    stdin_open: true
+    tty: true
+
+volumes:
+  billbook_data:

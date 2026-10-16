@@ -103,6 +103,25 @@ Data is stored in `billbook_data/billbook.db` next to the source (or next to
 4. Keep the `billbook_data` folder next to the `.exe` — that is your data.
    Use the in-app **Backup** screen regularly (pen drive / Drive folder).
 
+## Run with Docker (optional)
+
+Handy on Linux dev machines or anywhere without a Python install — the
+Windows `.exe` above is still the recommended path for the shop PC
+(Docker Desktop on Windows needs an extra X server like VcXsrv/X410 for
+GUI apps, so the `.exe` is simpler there).
+
+On Linux:
+
+```bash
+docker compose build
+xhost +local:docker      # allow the container to use your display (per session)
+docker compose up        # launches BillBook in a window
+```
+
+Data (SQLite db + invoice PDFs) lives in the `billbook_data` Docker volume,
+so bills survive container rebuilds. To start fresh, `docker volume rm
+billbook_data`. After code changes, rebuild with `docker compose build`.
+
 ## Project structure
 
 | File | What it does |

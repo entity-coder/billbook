@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.git/
+.gitignore
+billbook_data/
+dist/
+build/
+*.spec
+shots/
+.venv/
+venv/
+.vscode/
+.idea/
