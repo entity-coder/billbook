@@ -721,13 +721,31 @@ class BillingFrame(ctk.CTkFrame):
         self.tabview = ctk.CTkTabview(self)
         self.tabview.pack(fill="both", expand=True)
 
+        app.bind("<F1>", lambda e: self.shortcuts_help())
         app.bind("<F2>", lambda e: self.new_tab())
         app.bind("<Control-s>", lambda e: self.finalize_current())
+        app.bind("<Control-Return>", lambda e: self.finalize_current())
         app.bind("<Control-p>", lambda e: self.print_current())
         app.bind("<F3>", lambda e: self.focus_search())
         app.bind("<F4>", lambda e: self.pick_customer_current())
+        app.bind("<F6>", lambda e: self.toggle_price_mode())
+        app.bind("<F8>", lambda e: self.focus_bill_discount())
+        app.bind("<F9>", lambda e: self.repeat_last_bill_current())
+        app.bind("<Insert>", self._guarded_key(lambda: self.product_dialog()))
+        app.bind("<Prior>", lambda e: self.switch_tab(-1))
+        app.bind("<Next>", lambda e: self.switch_tab(1))
+        app.bind("<End>", self.end_bill_key)
+        app.bind("<Delete>", self.delete_key)
         app.bind("<Escape>", lambda e: self.clear_line_inputs())
         self.new_tab()
+
+    def _guarded_key(self, fn):
+        def handler(event):
+            if self._typing_focus():
+                return
+            fn()
+            return "break"
+        return handler
 
     def pick_customer_current(self):
         cur = self.current()
@@ -739,7 +757,144 @@ class BillingFrame(ctk.CTkFrame):
     def focus_search(self):
         cur = self.current()
         if cur:
-            cur[1]["prod_e"].focus_set()
+            tab, w = cur
+            w["prod_e"].focus_set()
+            self._suggest_show(tab, w, show_all=True)
+
+    def _typing_focus(self):
+        try:
+            foc = self.app.focus_get()
+            if foc is None:
+                return False
+            return foc.winfo_class() in ("Entry", "Text", "TEntry", "TText")
+        except Exception:
+            return False
+
+    def end_bill_key(self, event):
+        if self._typing_focus():
+            return
+        self.end_bill_dialog()
+        return "break"
+
+    def end_bill_dialog(self):
+        cur = self.current()
+        if not cur:
+            return
+        tab, w = cur
+        win = ctk.CTkToplevel(self.app)
+        win.title("End bill")
+        win.geometry("340x180")
+        win.transient(self.app)
+        win.grab_set()
+        ctk.CTkLabel(win, text=f"End {tab.name}?",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(
+                         pady=(18, 2))
+        ctk.CTkLabel(win,
+                     text=f"{len(tab.items)} item(s) on this bill",
+                     text_color="gray").pack(pady=(0, 12))
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(pady=6)
+        save_b = ctk.CTkButton(
+            btns, text="Save bill", fg_color="#1f6f43",
+            hover_color="#175733",
+            command=lambda: (win.destroy(), self.finalize_current()))
+        save_b.pack(side="left", padx=6)
+        ctk.CTkButton(
+            btns, text="Discard", fg_color="#b3261e",
+            hover_color="#8f1d17",
+            command=lambda: (win.destroy(), self.close_tab(tab.name))).pack(
+                side="left", padx=6)
+        ctk.CTkButton(btns, text="Cancel", fg_color="transparent",
+                      command=win.destroy).pack(side="left", padx=6)
+        save_b.focus_set()
+        win.bind("<Return>", lambda e: (win.destroy(),
+                                        self.finalize_current()))
+        win.bind("<Escape>", lambda e: win.destroy())
+
+    def delete_key(self, event):
+        if self._typing_focus():
+            return
+        cur = self.current()
+        if not cur:
+            return
+        tab, w = cur
+        if w.get("card_sel") is not None:
+            self.remove_line(tab, w)
+            return "break"
+
+    def toggle_price_mode(self):
+        cur = self.current()
+        if not cur:
+            return
+        tab, w = cur
+        new = "Retail" if tab.price_mode == "wholesale" else "Wholesale"
+        try:
+            w["mode_var"].set(new)
+        except Exception:
+            pass
+        self._on_mode_change(tab, new)
+
+    def focus_bill_discount(self):
+        cur = self.current()
+        if not cur:
+            return
+        try:
+            cur[1]["disc_e"].focus_set()
+            cur[1]["disc_e"].select_range(0, "end")
+        except Exception:
+            pass
+
+    def repeat_last_bill_current(self):
+        cur = self.current()
+        if cur:
+            self.repeat_last_bill(cur[0], cur[1])
+
+    def switch_tab(self, delta):
+        names = list(self.tabs.keys())
+        if len(names) < 2:
+            return
+        try:
+            i = names.index(self.current_name())
+        except ValueError:
+            return
+        self.tabview.set(names[(i + delta) % len(names)])
+
+    def shortcuts_help(self):
+        win = ctk.CTkToplevel(self.app)
+        win.title("Keyboard shortcuts")
+        win.geometry("460x480")
+        win.transient(self.app)
+        ctk.CTkLabel(win, text="Keyboard shortcuts",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(
+                         pady=(14, 8))
+        rows = [
+            ("F1", "This help"),
+            ("F2", "New bill tab"),
+            ("F3", "Jump to product search (+ open list)"),
+            ("F4", "Choose customer (Esc closes)"),
+            ("F6", "Toggle Wholesale / Retail prices"),
+            ("F8", "Jump to bill discount field"),
+            ("F9", "Repeat last bill for a customer"),
+            ("Enter", "Add line \u00b7 qty \u2192 rate \u2192 discount \u2192 product list"),
+            ("Up / Down", "Move in product dropdown"),
+            ("Esc", "Close dropdown / clear entry"),
+            ("Tab", "Next field"),
+            ("Delete", "Remove selected bill line"),
+            ("End", "End bill: Save (default) or Discard"),
+            ("Insert", "Add new product"),
+            ("PgUp / PgDn", "Switch bill tabs"),
+            ("Ctrl+S / Ctrl+Enter", "Save bill"),
+            ("Ctrl+P", "Print bill"),
+        ]
+        for key, desc in rows:
+            r = ctk.CTkFrame(win, fg_color="transparent")
+            r.pack(fill="x", padx=24, pady=2)
+            ctk.CTkLabel(r, text=key, width=140, anchor="w",
+                         font=ctk.CTkFont(weight="bold")).pack(side="left")
+            ctk.CTkLabel(r, text=desc, anchor="w").pack(side="left")
+        ctk.CTkButton(win, text="Close",
+                      command=win.destroy).pack(pady=14)
+        win.bind("<Escape>", lambda e: win.destroy())
 
     def clear_line_inputs(self):
         cur = self.current()
@@ -770,7 +925,7 @@ class BillingFrame(ctk.CTkFrame):
 
         return sorted(self.db.list_products(q), key=rank)[:10]
 
-    def _suggest_show(self, tab, w):
+    def _suggest_show(self, tab, w, show_all=False):
         prod_e, suggest = w["prod_e"], w["suggest"]
         for ch in suggest.winfo_children():
             ch.destroy()
@@ -778,9 +933,13 @@ class BillingFrame(ctk.CTkFrame):
         w["suggest_idx"] = -1
         q = prod_e.get().strip()
         if not q:
-            suggest.place_forget()
-            return
-        items = self._rank_products(q)
+            if not show_all:
+                suggest.place_forget()
+                return
+            items = sorted(self.db.list_products(""),
+                           key=lambda p: (p.get("name") or "").lower())[:40]
+        else:
+            items = self._rank_products(q)
         if not items:
             suggest.place_forget()
             return
@@ -1076,9 +1235,10 @@ class BillingFrame(ctk.CTkFrame):
                       hover_color="#8f1d17",
                       command=lambda: self.close_tab(tab.name)).pack(
                           side="right", padx=4)
-        ctk.CTkLabel(r4, text="Shortcuts: F2 new tab \u00b7 F3 search \u00b7 "
-                              "F4 customer \u00b7 Enter add line \u00b7 Tab next field \u00b7 "
-                              "Esc clear \u00b7 Ctrl+S save \u00b7 Ctrl+P print",
+        ctk.CTkLabel(r4, text="Shortcuts: F1 help \u00b7 F2 new tab \u00b7 F3 search \u00b7 "
+                              "F4 customer \u00b7 F9 repeat bill \u00b7 Enter next field \u00b7 "
+                              "Del remove line \u00b7 End finish bill \u00b7 "
+                              "Ctrl+S save \u00b7 Ctrl+P print",
                      text_color="gray").pack(side="right", padx=10)
 
         w.update({"cust_btn": cust_btn, "pay_var": pay_var,
@@ -1472,6 +1632,7 @@ class BillingFrame(ctk.CTkFrame):
                 w["prod_e"].focus_set()
             except Exception:
                 pass
+            self._suggest_show(tab, w, show_all=True)
             return
         e = (w.get("card_fields") or {}).get(idx, {}).get(which)
         try:
