@@ -5,8 +5,10 @@ customer ledger, invoices, reports, backup/restore, settings.
 """
 
 import csv
+import os
 import shutil
 import tempfile
+import threading
 import zipfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -17,6 +19,7 @@ from tkinter import ttk
 
 import invoices
 import printing
+from backup import BackupFrame, auto_backup_on_exit
 from db import data_dir
 
 RUPEE = "\u20b9"
@@ -142,11 +145,17 @@ class App(ctk.CTk):
 
         self.theme_var = ctk.StringVar(
             value="Dark" if db.get_setting("theme") == "dark" else "Light")
-        ctk.CTkLabel(self.sidebar, text="Theme").pack(pady=(16, 0))
+        self._theme_lbl = ctk.CTkLabel(self.sidebar, text="Theme")
+        self._theme_lbl.pack(pady=(16, 0))
         ctk.CTkSegmentedButton(self.sidebar, values=["Dark", "Light"],
                                variable=self.theme_var,
                                command=self.switch_theme).pack(
                                    padx=10, pady=6, fill="x")
+
+        self.update_btn = ctk.CTkButton(
+            self.sidebar, text="\u2b06 Update available",
+            fg_color="#0b5fa5", hover_color="#084a82",
+            command=self._on_update_clicked)
 
         self.content = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
         self.content.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
@@ -156,6 +165,92 @@ class App(ctk.CTk):
         self.screens = {}
         self.show("dashboard")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._update_sha = None
+        self._update_checking = False
+        self.after(2500, self._start_update_check)
+
+    def _start_update_check(self):
+        if self._update_checking:
+            return
+        self._update_checking = True
+        threading.Thread(target=self._bg_update_check, daemon=True).start()
+
+    def _bg_update_check(self):
+        try:
+            import updater
+            status, sha = updater.check_update()
+        except Exception:
+            status, sha = "offline", None
+        try:
+            self.after(0, lambda: self._on_update_checked(status, sha))
+        except Exception:
+            pass
+
+    def _on_update_checked(self, status, sha):
+        self._update_checking = False
+        if status == "available" and sha:
+            self._update_sha = sha
+            try:
+                self.update_btn.pack(fill="x", padx=10, pady=6,
+                                     before=self._theme_lbl)
+            except Exception:
+                self.update_btn.pack(fill="x", padx=10, pady=6)
+
+    def _on_update_clicked(self):
+        sha = self._update_sha
+        if not sha:
+            return
+        if not messagebox.askyesno(
+                "Update BillBook",
+                "A new version of BillBook is available.\n\n"
+                "The update downloads the latest version, rebuilds the app "
+                "(takes a few minutes) and restarts it automatically.\n"
+                "Your bills, products and backups are never touched.\n\n"
+                "Update now?"):
+            return
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Updating BillBook")
+        dlg.geometry("380x140")
+        dlg.transient(self)
+        dlg.grab_set()
+        ctk.CTkLabel(dlg, text="Downloading update...",
+                     font=ctk.CTkFont(weight="bold")).pack(pady=(18, 8))
+        bar = ctk.CTkProgressBar(dlg, width=300)
+        bar.pack(pady=6)
+        bar.set(0)
+        status_lbl = ctk.CTkLabel(dlg, text="", text_color="gray")
+        status_lbl.pack(pady=4)
+
+        def progress(frac):
+            self.after(0, lambda: bar.set(frac))
+
+        def work():
+            try:
+                import updater
+                updater.download_and_stage(sha, progress=progress)
+                bat = updater.write_apply_bat()
+            except Exception as e:  # noqa: BLE001
+                self.after(0, lambda: (dlg.destroy(),
+                                       messagebox.showerror(
+                                           "Update",
+                                           f"Update failed:\n{e}\n\n"
+                                           "Nothing was changed.")))
+                return
+            self.after(0, lambda: self._finish_update(dlg, bat, sha))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_update(self, dlg, bat, sha):
+        import updater
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+        messagebox.showinfo(
+            "Update",
+            "Download complete.\n\nBillBook will now close, apply the update "
+            "and restart itself.")
+        updater.launch_apply_and_quit(bat, os.getpid(), sha, self.on_close)
 
     def switch_theme(self, value):
         mode = "dark" if value == "Dark" else "light"
@@ -218,7 +313,8 @@ class DashboardFrame(ctk.CTkFrame):
                 ("Pending dues", money(dues), "#b3261e"),
                 ("Low-stock items", str(len(low)), "#b26a00"),
                 ("Stock value", money(db.stock_value()), "#0b5fa5")]:
-            card = ctk.CTkFrame(cards, border_width=2, border_color=color)
+            card = ctk.CTkFrame(cards, corner_radius=10, border_width=1,
+                                border_color=color)
             card.pack(side="left", fill="x", expand=True, padx=6)
             ctk.CTkLabel(card, text=title, text_color="gray").pack(
                 anchor="w", padx=12, pady=(8, 0))
@@ -602,11 +698,11 @@ class BillingFrame(ctk.CTkFrame):
         self.counter = 0
 
         self.f_card_name = ctk.CTkFont(size=15, weight="bold")
-        self.f_card_total = ctk.CTkFont(size=15, weight="bold")
+        self.f_card_total = ctk.CTkFont(size=16, weight="bold")
         self.f_muted = ctk.CTkFont(size=12)
         self.f_grand = ctk.CTkFont(size=24, weight="bold")
-        self.CARD_BG = ("gray92", "gray17")
-        self.CARD_BORDER = ("gray65", "gray35")
+        self.CARD_BG = ("gray94", "gray16")
+        self.CARD_BORDER = ("gray76", "gray30")
         self.ACCENT = "#1f6f43"
         self.ACCENT_TEXT = ("#166534", "#86efac")
         self.DANGER = "#b3261e"
@@ -648,8 +744,87 @@ class BillingFrame(ctk.CTkFrame):
         w["qty_e"].insert(0, "1")
         w["ldisc_e"].delete(0, "end")
         w["picked"] = None
-        w["suggest"].place_forget()
+        self._suggest_hide(w)
         w["prod_e"].focus_set()
+
+    def _rank_products(self, q):
+        ql = q.lower()
+
+        def rank(p):
+            name = (p.get("name") or "").lower()
+            sku = (p.get("sku") or "").lower()
+            if name.startswith(ql):
+                return (0, name)
+            if ql in name:
+                return (1, name)
+            if sku.startswith(ql) or ql in sku:
+                return (2, name)
+            return (3, name)
+
+        return sorted(self.db.list_products(q), key=rank)[:10]
+
+    def _suggest_show(self, tab, w):
+        prod_e, suggest = w["prod_e"], w["suggest"]
+        for ch in suggest.winfo_children():
+            ch.destroy()
+        w["suggest_items"] = []
+        w["suggest_idx"] = -1
+        q = prod_e.get().strip()
+        if not q:
+            suggest.place_forget()
+            return
+        items = self._rank_products(q)
+        if not items:
+            suggest.place_forget()
+            return
+        w["suggest_items"] = items
+        for p in items:
+            price = (p["wholesale_price"] if tab.price_mode == "wholesale"
+                     else p["retail_price"])
+            sku = p["sku"] or "\u2014"
+            b = ctk.CTkButton(
+                suggest,
+                text=f"{p['name']}  \u00b7 {sku}  \u00b7 "
+                     f"{money(price)}/{p['unit']}",
+                anchor="w", fg_color="transparent",
+                text_color=("black", "white"),
+                hover_color=("gray75", "gray25"),
+                command=lambda pp=p: self._suggest_pick(tab, w, pp))
+            b.pack(fill="x", pady=1)
+        x = prod_e.winfo_x()
+        y = prod_e.winfo_y() + prod_e.winfo_height() + 4
+        suggest.place(x=x, y=y)
+        suggest.lift()
+
+    def _suggest_hide(self, w):
+        try:
+            w["suggest"].place_forget()
+        except Exception:
+            pass
+        w["suggest_items"] = []
+        w["suggest_idx"] = -1
+
+    def _suggest_move(self, tab, w, delta):
+        items = w.get("suggest_items") or []
+        if not items:
+            return
+        idx = w.get("suggest_idx", -1) + delta
+        idx = max(0, min(idx, len(items) - 1))
+        w["suggest_idx"] = idx
+        for i, b in enumerate(w["suggest"].winfo_children()):
+            if i == idx:
+                b.configure(fg_color=self.ACCENT, text_color="white")
+            else:
+                b.configure(fg_color="transparent",
+                            text_color=("black", "white"))
+
+    def _suggest_pick(self, tab, w, p):
+        w["prod_e"].delete(0, "end")
+        w["prod_e"].insert(0, p["name"])
+        w["picked"] = p
+        self._suggest_hide(w)
+        w["qty_e"].focus_set()
+        w["qty_e"].select_range(0, "end")
 
     def new_tab(self, edit_bill_id=None, label=None):
         self.counter += 1
@@ -715,8 +890,16 @@ class BillingFrame(ctk.CTkFrame):
         w = {}  # widget refs
         frame.grid_columnconfigure(0, weight=1)
 
-        r1 = ctk.CTkFrame(frame, fg_color="transparent")
-        r1.pack(fill="x", pady=4)
+        meta = ctk.CTkFrame(frame, corner_radius=10, border_width=1,
+                            fg_color=self.CARD_BG,
+                            border_color=self.CARD_BORDER)
+        meta.pack(fill="x", pady=(2, 8))
+        ctk.CTkLabel(meta, text="Bill details",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color="gray").pack(anchor="w", padx=14,
+                                             pady=(8, 0))
+        r1 = ctk.CTkFrame(meta, fg_color="transparent")
+        r1.pack(fill="x", padx=6, pady=(2, 10))
 
         ctk.CTkLabel(r1, text="Customer *").pack(side="left", padx=(4, 2))
         cust_btn = ctk.CTkButton(r1, text="Walk-in \u2014 F4 to choose",
@@ -778,43 +961,50 @@ class BillingFrame(ctk.CTkFrame):
                                 command=lambda: self.add_line(tab, w))
         add_btn.pack(side="left", padx=8)
 
-        suggest = ctk.CTkScrollableFrame(r2, width=280, height=150)
+        suggest = ctk.CTkScrollableFrame(r2, width=360, height=190,
+                                         fg_color=("gray95", "gray14"),
+                                         border_width=1,
+                                         border_color=("gray70", "gray30"))
         suggest.place_forget()
+        w["suggest"] = suggest
+        w["suggest_items"] = []
+        w["suggest_idx"] = -1
 
         def on_type(event):
-            q = prod_e.get().strip()
-            for ch in suggest.winfo_children():
-                ch.destroy()
-            if len(q) < 1:
-                suggest.place_forget()
+            if event.keysym in ("Up", "Down", "Return", "Escape", "Tab",
+                                "ISO_Left_Tab", "Shift_L", "Shift_R",
+                                "Control_L", "Control_R", "Alt_L", "Alt_R",
+                                "Caps_Lock"):
                 return
-            matches = self.db.list_products(q)[:8]
-            if not matches:
-                suggest.place_forget()
-                return
-            for p in matches:
-                price = (p["wholesale_price"] if tab.price_mode == "wholesale"
-                         else p["retail_price"])
-                ctk.CTkButton(
-                    suggest,
-                    text=f"{p['name']} \u2014 {money(price)}/{p['unit']} "
-                         f"(stock {p['stock']:g})",
-                    anchor="w", fg_color="transparent",
-                    text_color=("black", "white"),
-                    command=lambda pp=p: (prod_e.delete(0, "end"),
-                                          prod_e.insert(0, pp["name"]),
-                                          w.update({"picked": pp}),
-                                          suggest.place_forget(),
-                                          qty_e.focus_set(),
-                                          qty_e.select_range(0, "end"))
-                ).pack(fill="x", pady=1)
-            x = prod_e.winfo_x()
-            y = prod_e.winfo_y() + prod_e.winfo_height() + 4
-            suggest.place(x=x, y=y)
-            suggest.lift()
+            self._suggest_show(tab, w)
+
+        def on_prod_return(event):
+            if w["suggest"].winfo_ismapped() and w.get("suggest_items"):
+                idx = w.get("suggest_idx", -1)
+                if idx < 0:
+                    idx = 0
+                self._suggest_pick(tab, w, w["suggest_items"][idx])
+                return "break"
+            self.add_line(tab, w)
+            return "break"
+
+        def on_prod_nav(event, delta):
+            if w["suggest"].winfo_ismapped() and w.get("suggest_items"):
+                self._suggest_move(tab, w, delta)
+                return "break"
+            return None
+
+        def on_prod_esc(event):
+            if w["suggest"].winfo_ismapped():
+                self._suggest_hide(w)
+                return "break"
+            return None
 
         prod_e.bind("<KeyRelease>", on_type)
-        prod_e.bind("<Return>", lambda e: self.add_line(tab, w))
+        prod_e.bind("<Return>", on_prod_return)
+        prod_e.bind("<Down>", lambda e: on_prod_nav(e, 1))
+        prod_e.bind("<Up>", lambda e: on_prod_nav(e, -1))
+        prod_e.bind("<Escape>", on_prod_esc)
         qty_e.bind("<Return>", lambda e: self.add_line(tab, w))
         ldisc_e.bind("<Return>", lambda e: self.add_line(tab, w))
         w.update({"picked": None})
@@ -985,7 +1175,7 @@ class BillingFrame(ctk.CTkFrame):
         w["qty_e"].insert(0, "1")
         w["ldisc_e"].delete(0, "end")
         w["picked"] = None
-        w["suggest"].place_forget()
+        self._suggest_hide(w)
         self._refresh_totals(tab.name, flash_idx=merged_idx)
         w["prod_e"].focus_set()
 
@@ -1084,12 +1274,12 @@ class BillingFrame(ctk.CTkFrame):
 
     def _build_card(self, tab, w, idx, it):
         sf = w["cards_sf"]
-        card = ctk.CTkFrame(sf, corner_radius=10, border_width=1,
+        card = ctk.CTkFrame(sf, corner_radius=12, border_width=1,
                             fg_color=self.CARD_BG,
                             border_color=self.CARD_BORDER)
 
         top = ctk.CTkFrame(card, fg_color="transparent")
-        top.pack(fill="x", padx=12, pady=(10, 0))
+        top.pack(fill="x", padx=14, pady=(12, 2))
         name = ctk.CTkLabel(top, text=it["name"], font=self.f_card_name,
                             anchor="w")
         name.pack(side="left")
@@ -1107,16 +1297,17 @@ class BillingFrame(ctk.CTkFrame):
         rm.pack(side="right")
 
         mid = ctk.CTkFrame(card, fg_color="transparent")
-        mid.pack(fill="x", padx=12, pady=(0, 2))
+        mid.pack(fill="x", padx=14, pady=(0, 2))
         sku_txt = f"SKU: {it['sku']}" if it.get("sku") else "SKU: \u2014"
         ctk.CTkLabel(mid, text=f"{sku_txt}  \u00b7  {it['unit']}",
                      text_color="gray", font=self.f_muted).pack(side="left")
         total_lbl = ctk.CTkLabel(mid, text=money(self._line_amount(it)),
-                                 font=self.f_card_total)
+                                 font=self.f_card_total,
+                                 text_color=self.ACCENT_TEXT)
         total_lbl.pack(side="right")
 
         bot = ctk.CTkFrame(card, fg_color="transparent")
-        bot.pack(fill="x", padx=12, pady=(2, 10))
+        bot.pack(fill="x", padx=14, pady=(4, 12))
 
         ctk.CTkLabel(bot, text="Qty", text_color="gray",
                      font=self.f_muted).pack(side="left", padx=(0, 2))
@@ -2533,243 +2724,6 @@ class ReportsFrame(ctk.CTkFrame):
                 t["name"], f"{t['qty']:g} {t['unit']}", money(t["total"])))
 
 
-AUTO_BACKUP_PREFIX = "billbook_auto_backup_"
-AUTO_BACKUP_KEEP = 14
-
-
-def make_backup_zip(db, dest):
-    dest = Path(dest)
-    try:
-        db.conn.commit()
-    except Exception:
-        pass
-    dd = data_dir()
-    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
-        if db.path.exists():
-            z.write(db.path, "billbook.db")
-        for sub in ("invoices", "logos"):
-            d = dd / sub
-            if d.is_dir():
-                for f in d.rglob("*"):
-                    if f.is_file():
-                        z.write(f, f"{sub}/{f.relative_to(d)}")
-    return dest
-
-
-def auto_backup_folder(db):
-    custom = (db.get_setting("auto_backup_folder") or "").strip()
-    if custom:
-        return Path(custom)
-    return data_dir() / "backups"
-
-
-def prune_auto_backups(folder, keep=AUTO_BACKUP_KEEP):
-    try:
-        folder = Path(folder)
-        autos = sorted(folder.glob(AUTO_BACKUP_PREFIX + "*.zip"),
-                       key=lambda p: p.name)
-        for old in autos[:max(0, len(autos) - keep)]:
-            try:
-                old.unlink()
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-
-def auto_backup_on_exit(db):
-    try:
-        if db.get_setting("auto_backup_on_exit", "1") != "1":
-            return None
-        folder = auto_backup_folder(db)
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            folder = data_dir() / "backups"
-            folder.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest = folder / f"{AUTO_BACKUP_PREFIX}{stamp}.zip"
-        make_backup_zip(db, dest)
-        prune_auto_backups(folder)
-        return dest
-    except Exception:
-        return None
-
-
-class BackupFrame(ctk.CTkFrame):
-    def __init__(self, parent, db, app):
-        super().__init__(parent, fg_color="transparent")
-        self.db, self.app = db, app
-        ctk.CTkLabel(self, text="Backup & restore",
-                     font=ctk.CTkFont(size=22, weight="bold")).pack(
-                         anchor="w", pady=(4, 8))
-
-        info = ctk.CTkFrame(self)
-        info.pack(fill="x", pady=8)
-        p = self.db.path
-        size_kb = p.stat().st_size / 1024 if p.exists() else 0
-        dd = data_dir()
-        n_inv = len(list((dd / "invoices").glob("*.pdf"))) \
-            if (dd / "invoices").is_dir() else 0
-        ctk.CTkLabel(
-            info,
-            text=f"Data file: {p}\nSize: {size_kb:.1f} KB   |   "
-                 f"Saved invoice PDFs: {n_inv}",
-            justify="left").pack(anchor="w", padx=12, pady=10)
-
-        btns = ctk.CTkFrame(self, fg_color="transparent")
-        btns.pack(fill="x", pady=8)
-        ctk.CTkButton(btns, text="Backup now (one click)", fg_color="#1f6f43",
-                      hover_color="#175733", height=44,
-                      command=self.backup).pack(side="left", padx=4)
-        ctk.CTkButton(btns, text="Restore from file...", height=44,
-                      command=self.restore).pack(side="left", padx=4)
-        self.status = ctk.CTkLabel(btns, text="", text_color="gray")
-        self.status.pack(side="left", padx=12)
-
-        auto = ctk.CTkFrame(self)
-        auto.pack(fill="x", pady=8)
-        ctk.CTkLabel(auto, text="Automatic backup on exit",
-                     font=ctk.CTkFont(size=15, weight="bold")).pack(
-                         anchor="w", padx=12, pady=(10, 2))
-        self.auto_var = ctk.BooleanVar(
-            value=db.get_setting("auto_backup_on_exit", "1") == "1")
-        ctk.CTkCheckBox(
-            auto, text="Back up automatically every time the app closes",
-            variable=self.auto_var, command=self.save_auto_toggle).pack(
-                anchor="w", padx=12, pady=2)
-        frow = ctk.CTkFrame(auto, fg_color="transparent")
-        frow.pack(fill="x", padx=12, pady=(4, 4))
-        ctk.CTkLabel(frow, text="Auto-backup folder:").pack(side="left")
-        self.auto_folder_label = ctk.CTkLabel(
-            frow, text=str(auto_backup_folder(db)), text_color="gray",
-            wraplength=420, justify="left")
-        self.auto_folder_label.pack(side="left", padx=8)
-        ctk.CTkButton(frow, text="Choose folder...", width=130,
-                      command=self.choose_auto_folder).pack(side="left",
-                                                           padx=4)
-        ctk.CTkButton(frow, text="Use default", width=100,
-                      command=self.reset_auto_folder).pack(side="left",
-                                                          padx=4)
-        ctk.CTkLabel(
-            auto,
-            text=f"The last {AUTO_BACKUP_KEEP} automatic backups are kept; "
-                 "older ones are deleted automatically. Manual backups are "
-                 "never deleted.",
-            text_color="gray", wraplength=700, justify="left").pack(
-                anchor="w", padx=12, pady=(0, 10))
-
-        ctk.CTkLabel(
-            self,
-            text="A backup is a single .zip with the database, all saved "
-                 "invoice PDFs and the shop logo. Back up daily to a pen "
-                 "drive or Google Drive folder so a PC crash never loses "
-                 "your bills and khata.\n\n"
-                 "Restore always saves a safety copy of your CURRENT data "
-                 "first (in billbook_data/backups), so nothing is ever "
-                 "lost by accident.",
-            text_color="gray", wraplength=700, justify="left").pack(
-                anchor="w", pady=12)
-
-    def save_auto_toggle(self):
-        self.db.set_setting("auto_backup_on_exit",
-                            "1" if self.auto_var.get() else "0")
-
-    def choose_auto_folder(self):
-        folder = filedialog.askdirectory(title="Choose auto-backup folder")
-        if not folder:
-            return
-        self.db.set_setting("auto_backup_folder", folder)
-        self.auto_folder_label.configure(text=folder)
-
-    def reset_auto_folder(self):
-        self.db.set_setting("auto_backup_folder", "")
-        self.auto_folder_label.configure(text=str(auto_backup_folder(
-            self.db)))
-
-    def backup(self):
-        folder = filedialog.askdirectory(title="Choose backup folder")
-        if not folder:
-            return
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest = Path(folder) / f"billbook_backup_{stamp}.zip"
-        try:
-            make_backup_zip(self.db, dest)
-        except Exception as e:  # noqa: BLE001
-            messagebox.showerror("Backup", f"Backup failed:\n{e}")
-            return
-        self.status.configure(text=f"Backed up to {dest.name}")
-        messagebox.showinfo("Backup", f"Backup saved:\n{dest}")
-
-    def restore(self):
-        path = filedialog.askopenfilename(
-            filetypes=[("BillBook backup", "*.zip"), ("SQLite DB", "*.db")],
-            title="Choose backup file")
-        if not path:
-            return
-        if not messagebox.askyesno(
-                "Restore",
-                "Replace ALL current data with this backup?\n"
-                "Current bills, stock and khata will be overwritten.\n\n"
-                "A safety copy of your current data is saved first."):
-            return
-        dd = data_dir()
-        safe_dir = dd / "backups"
-        try:
-            safe_dir.mkdir(exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.db.conn.commit()
-            shutil.copy2(self.db.path,
-                         safe_dir / f"auto_before_restore_{stamp}.db")
-        except Exception as e:  # noqa: BLE001
-            messagebox.showerror("Restore",
-                                 f"Could not make a safety copy: {e}\n"
-                                 "Restore cancelled — nothing was changed.")
-            return
-        import sqlite3
-        tmp = None
-        try:
-            if path.lower().endswith(".zip"):
-                tmp = Path(tempfile.mkdtemp(prefix="billbook_restore_"))
-                with zipfile.ZipFile(path) as z:
-                    z.extractall(tmp)
-                cands = (list(tmp.rglob("billbook.db"))
-                         or list(tmp.rglob("*.db")))
-                if not cands:
-                    raise ValueError("No database found inside the zip.")
-                db_src = cands[0]
-                for sub in ("invoices", "logos"):
-                    src_d = tmp / sub
-                    if src_d.is_dir():
-                        dst_d = dd / sub
-                        dst_d.mkdir(exist_ok=True)
-                        for f in src_d.rglob("*"):
-                            if f.is_file():
-                                dst = dst_d / f.relative_to(src_d)
-                                dst.parent.mkdir(parents=True, exist_ok=True)
-                                shutil.copy2(f, dst)
-            else:
-                db_src = Path(path)
-            probe = sqlite3.connect(str(db_src))
-            tables = {r[0] for r in probe.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
-            probe.close()
-            if not {"products", "bills", "customers"} <= tables:
-                raise ValueError("This file is not a BillBook backup.")
-            self.db.close()
-            shutil.copy2(db_src, self.db.path)
-        except Exception as e:  # noqa: BLE001
-            messagebox.showerror("Restore",
-                                 f"Restore failed: {e}\n\n"
-                                 "Your current data was NOT touched — a "
-                                 "safety copy is in billbook_data/backups.")
-            return
-        finally:
-            if tmp is not None and tmp.exists():
-                shutil.rmtree(tmp, ignore_errors=True)
-        messagebox.showinfo("Restore",
-                            "Backup restored. Please close and reopen "
-                            "BillBook to continue with the restored data.")
 
 
 class SettingsFrame(ctk.CTkFrame):
@@ -2836,9 +2790,48 @@ class SettingsFrame(ctk.CTkFrame):
             e.pack(anchor="w", padx=4, pady=(0, 6), fill="x")
             self.entries[key] = e
 
+        ctk.CTkLabel(scroll, text="App updates",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(
+                         anchor="w", pady=(12, 6))
+        ctk.CTkLabel(scroll,
+                     text="BillBook checks GitHub for updates when it starts. "
+                          "You can also check right now:",
+                     text_color="gray", wraplength=560,
+                     justify="left").pack(anchor="w", padx=4)
+        ctk.CTkButton(scroll, text="Check for updates",
+                      command=self.check_updates).pack(anchor="w", padx=4,
+                                                      pady=(6, 0))
+
         ctk.CTkButton(scroll, text="Save settings", fg_color="#1f6f43",
                       hover_color="#175733",
                       command=self.save).pack(anchor="w", padx=4, pady=14)
+
+    def check_updates(self):
+        def work():
+            try:
+                import updater
+                status, sha = updater.check_update()
+            except Exception:
+                status, sha = "offline", None
+            self.after(0, lambda: self._update_result(status, sha))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_result(self, status, sha):
+        if status == "available" and sha:
+            self.app._update_sha = sha
+            self.app._on_update_checked("available", sha)
+            if messagebox.askyesno(
+                    "Update available",
+                    "A new version of BillBook is available.\n\n"
+                    "Update now? (Takes a few minutes; your data is safe.)"):
+                self.app._on_update_clicked()
+        elif status == "offline":
+            messagebox.showinfo("Updates",
+                                "Could not reach GitHub.\n"
+                                "Check your internet connection.")
+        else:
+            messagebox.showinfo("Updates",
+                                "You already have the latest version.")
 
     def save(self):
         for key, e in self.entries.items():
