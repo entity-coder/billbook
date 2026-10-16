@@ -209,6 +209,14 @@ counter value: adding the same product twice merges the line instead of
 duplicating it, and a ⚠ marker appears on lines that would push stock to or
 below the low-stock threshold.
 
+**Product cards:** each bill line is its own bordered card, not a table row —
+product name prominent, SKU/unit muted, quantity stepper (− qty +), editable
+rate and line-discount fields right on the card, bold line total, × remove
+button, and the low-stock ⚠ badge when relevant. Clicking a card selects it
+(accent border); double-click opens the full line editor; adding a duplicate
+merges into the existing card and flashes it so the cashier sees where it
+went. An empty bill shows a clean "Bill is empty" placeholder.
+
 **Key design decisions in the code:**
 - *Billing math lives in one place* (`DB.compute_totals`): line discounts
   pre-GST, flat bill discount post-GST, round to nearest rupee. Every screen
@@ -224,6 +232,13 @@ below the low-stock threshold.
 - *Settings are a key/value table*, not a config file: the shop owner edits
   them in the Settings screen and they apply immediately, including print
   preferences with a live preview.
+- *Bill lines are cards, not table rows.* A ttk Treeview was cheaper, but at a
+  busy counter the cashier needs big touch/click targets and per-line editing
+  without opening dialogs — so each line is a bordered `CTkFrame` card with
+  its own stepper, rate/discount entries (committed on Enter/focus-out, with
+  revert-on-invalid), and remove button. Selection state is a plain index in
+  the tab's widget dict; merge-flash is a 500 ms `after()` callback guarded
+  by `winfo_exists()` so tab switches can't crash it.
 
 **Trade-offs / what I'd do differently:** I'd add a proper migration system
 if the schema ever changes (currently `CREATE TABLE IF NOT EXISTS` only);

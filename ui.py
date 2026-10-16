@@ -617,6 +617,17 @@ class BillingFrame(ctk.CTkFrame):
         self.tabs = {}          # tab name -> (tabview-name, BillTab, widgets)
         self.counter = 0
 
+        # Billing-screen typography + palette (one consistent scheme)
+        self.f_card_name = ctk.CTkFont(size=15, weight="bold")
+        self.f_card_total = ctk.CTkFont(size=15, weight="bold")
+        self.f_muted = ctk.CTkFont(size=12)
+        self.f_grand = ctk.CTkFont(size=24, weight="bold")
+        self.CARD_BG = ("gray92", "gray17")
+        self.CARD_BORDER = ("gray65", "gray35")
+        self.ACCENT = "#1f6f43"
+        self.ACCENT_TEXT = ("#166534", "#86efac")
+        self.DANGER = "#b3261e"
+
         ctk.CTkLabel(self, text="Billing",
                      font=ctk.CTkFont(size=22, weight="bold")).pack(
                          anchor="w", pady=(4, 6))
@@ -817,37 +828,32 @@ class BillingFrame(ctk.CTkFrame):
         ldisc_e.bind("<Return>", lambda e: self.add_line(tab, w))
         w.update({"picked": None})
 
-        # Items table
-        fr, tv = tree(frame, ("Item", "Qty", "Rate", "Disc.", "GST%", "Amount"),
-                      widths=(260, 80, 90, 80, 60, 110), height=13)
-        fr.pack(fill="both", expand=True, pady=6)
-        tv.bind("<Double-1>", lambda e: self.edit_line(tab, w))
-        # + / - adjust the selected line's quantity (step 1)
-        tv.bind("<plus>", lambda e: self.bump_qty(tab, w, +1))
-        tv.bind("<KP_Add>", lambda e: self.bump_qty(tab, w, +1))
-        tv.bind("<minus>", lambda e: self.bump_qty(tab, w, -1))
-        tv.bind("<KP_Subtract>", lambda e: self.bump_qty(tab, w, -1))
+        # Line items — one bordered product card per item
+        cards_sf = ctk.CTkScrollableFrame(frame, fg_color="transparent")
+        cards_sf.pack(fill="both", expand=True, pady=6)
 
         r3 = ctk.CTkFrame(frame, fg_color="transparent")
         r3.pack(fill="x", pady=2)
-        ctk.CTkButton(r3, text="Remove line",
+        ctk.CTkButton(r3, text="Remove selected",
                       command=lambda: self.remove_line(tab, w)).pack(
                           side="left", padx=4)
-        ctk.CTkButton(r3, text="Edit line (double-click)",
+        ctk.CTkButton(r3, text="Edit selected (double-click card)",
                       command=lambda: self.edit_line(tab, w)).pack(
                           side="left", padx=4)
 
         # Totals (sticky footer — always visible while billing)
+        ctk.CTkFrame(frame, height=2,
+                     fg_color=("gray75", "gray25")).pack(fill="x", pady=(2, 0))
         tot = ctk.CTkFrame(frame)
-        tot.pack(fill="x", pady=6)
+        tot.pack(fill="x", pady=(0, 6))
         tot_lbl = ctk.CTkLabel(tot, text="", justify="left",
-                               font=ctk.CTkFont(size=14))
+                               font=ctk.CTkFont(size=13))
         tot_lbl.pack(side="left", padx=12, pady=8)
         warn_lbl = ctk.CTkLabel(tot, text="", text_color="#b3261e",
                                 font=ctk.CTkFont(size=13, weight="bold"))
         warn_lbl.pack(side="left", padx=8, pady=8)
-        grand_lbl = ctk.CTkLabel(tot, text="", font=ctk.CTkFont(
-            size=22, weight="bold"))
+        grand_lbl = ctk.CTkLabel(tot, text="", font=self.f_grand,
+                                 text_color=self.ACCENT_TEXT)
         grand_lbl.pack(side="right", padx=12, pady=8)
 
         # Bottom actions
@@ -873,7 +879,8 @@ class BillingFrame(ctk.CTkFrame):
 
         w.update({"cust_btn": cust_btn, "pay_var": pay_var,
                   "mode_var": mode_var, "disc_e": disc_e, "prod_e": prod_e,
-                  "qty_e": qty_e, "ldisc_e": ldisc_e, "tv": tv,
+                  "qty_e": qty_e, "ldisc_e": ldisc_e, "cards_sf": cards_sf,
+                  "card_sel": None, "card_widgets": [],
                   "tot_lbl": tot_lbl, "warn_lbl": warn_lbl,
                   "grand_lbl": grand_lbl,
                   "suggest": suggest, "frame": frame})
@@ -974,12 +981,14 @@ class BillingFrame(ctk.CTkFrame):
         price = (p["wholesale_price"] if tab.price_mode == "wholesale"
                  else p["retail_price"])
         line_disc = fnum(w["ldisc_e"])
-        # Merge: same product added twice becomes one line with summed qty
-        for it in tab.items:
+        # Merge: same product added twice becomes one card with summed qty
+        merged_idx = None
+        for i, it in enumerate(tab.items):
             if it.get("product_id") == p["id"] and it["price"] == price \
                     and it.get("gst_percent") == p["gst_percent"] \
                     and not it.get("line_discount") and not line_disc:
                 it["qty"] += qty
+                merged_idx = i
                 break
         else:
             tab.items.append({
@@ -987,20 +996,23 @@ class BillingFrame(ctk.CTkFrame):
                 "qty": qty, "price": price,
                 "line_discount": line_disc, "gst_percent": p["gst_percent"],
                 "sku": p["sku"]})
+            merged_idx = len(tab.items) - 1
         w["prod_e"].delete(0, "end")
         w["qty_e"].delete(0, "end")
         w["qty_e"].insert(0, "1")
         w["ldisc_e"].delete(0, "end")
         w["picked"] = None
         w["suggest"].place_forget()
-        self._refresh_totals(tab.name)
+        self._refresh_totals(tab.name, flash_idx=merged_idx)
         w["prod_e"].focus_set()
 
     def edit_line(self, tab, w):
-        sel = w["tv"].selection()
-        if not sel:
+        idx = w.get("card_sel")
+        if idx is None or idx >= len(tab.items):
             return
-        idx = w["tv"].index(sel[0])
+        self.edit_line_idx(tab, w, idx)
+
+    def edit_line_idx(self, tab, w, idx):
         it = tab.items[idx]
         win = ctk.CTkToplevel(self)
         win.title("Edit line")
@@ -1030,56 +1042,234 @@ class BillingFrame(ctk.CTkFrame):
                 messagebox.showerror("Billing", "Enter valid numbers.")
                 return
             win.destroy()
+            w["card_sel"] = idx
             self._refresh_totals(tab.name)
 
         ctk.CTkButton(win, text="Save", command=save).pack(pady=14)
 
     def remove_line(self, tab, w):
-        sel = w["tv"].selection()
-        if not sel:
+        idx = w.get("card_sel")
+        if idx is None or idx >= len(tab.items):
             return
-        idx = w["tv"].index(sel[0])
+        self.remove_line_idx(tab, w, idx)
+
+    def remove_line_idx(self, tab, w, idx):
         del tab.items[idx]
+        w["card_sel"] = None
         self._refresh_totals(tab.name)
 
     def bump_qty(self, tab, w, delta):
-        """+ / - : change the selected line's quantity by 1 (min 1)."""
-        sel = w["tv"].selection()
-        if not sel:
+        """+ / - : change the selected card's quantity by 1 (min 1)."""
+        idx = w.get("card_sel")
+        if idx is None or idx >= len(tab.items):
             return
-        idx = w["tv"].index(sel[0])
+        self.bump_qty_idx(tab, w, idx, delta)
+
+    def bump_qty_idx(self, tab, w, idx, delta):
         it = tab.items[idx]
         it["qty"] = max(float(it["qty"]) + delta, 1)
+        w["card_sel"] = idx
         self._refresh_totals(tab.name)
-        w["tv"].selection_set(w["tv"].get_children()[idx])
-        w["tv"].focus(w["tv"].get_children()[idx])
 
-    def _refresh_totals(self, name):
+    # -- product cards ---------------------------------------------------------
+    def _line_amount(self, it):
+        taxable = max(it["qty"] * it["price"] - it["line_discount"], 0)
+        return taxable * (1 + it["gst_percent"] / 100)
+
+    def _low_stock(self, it):
+        """True if this line leaves stock at/below the low-stock threshold."""
+        if not it.get("product_id"):
+            return False
+        try:
+            p = self.db.get_product(it["product_id"])
+        except Exception:
+            return False
+        return bool(p) and (p["stock"] - it["qty"]) <= p["low_stock_threshold"]
+
+    def _render_cards(self, tab, w, flash_idx=None):
+        sf = w["cards_sf"]
+        for ch in sf.winfo_children():
+            ch.destroy()
+        cards = []
+        if not tab.items:
+            ctk.CTkLabel(
+                sf,
+                text="\U0001f9fe   Bill is empty\n\n"
+                     "Add products above \u2014 press F3 to jump to search.",
+                justify="center", text_color="gray",
+                font=ctk.CTkFont(size=14)).pack(expand=True, pady=48)
+            w["card_sel"] = None
+        else:
+            for idx, it in enumerate(tab.items):
+                card = self._build_card(tab, w, idx, it)
+                card.pack(fill="x", padx=6, pady=5)
+                cards.append(card)
+            sel = w.get("card_sel")
+            if sel is not None and sel < len(cards):
+                self._select_card(tab, w, sel)
+            else:
+                w["card_sel"] = None
+        w["card_widgets"] = cards
+        if flash_idx is not None and 0 <= flash_idx < len(cards):
+            self._flash_card(w, flash_idx)
+
+    def _build_card(self, tab, w, idx, it):
+        sf = w["cards_sf"]
+        card = ctk.CTkFrame(sf, corner_radius=10, border_width=1,
+                            fg_color=self.CARD_BG,
+                            border_color=self.CARD_BORDER)
+
+        # Header row: product name (prominent) + warning + remove button
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=12, pady=(10, 0))
+        name = ctk.CTkLabel(top, text=it["name"], font=self.f_card_name,
+                            anchor="w")
+        name.pack(side="left")
+        if self._low_stock(it):
+            ctk.CTkLabel(top, text="\u26a0 low stock",
+                         text_color=self.DANGER,
+                         font=ctk.CTkFont(size=12, weight="bold")).pack(
+                             side="left", padx=8)
+        rm = ctk.CTkButton(top, text="\u2715", width=30, height=28,
+                           fg_color="transparent",
+                           text_color=(self.DANGER, "#e57373"),
+                           hover_color=("gray80", "gray25"),
+                           command=lambda: self.remove_line_idx(tab, w, idx))
+        rm.pack(side="right")
+
+        # Middle row: SKU/unit (muted) + line total (bold, right)
+        mid = ctk.CTkFrame(card, fg_color="transparent")
+        mid.pack(fill="x", padx=12, pady=(0, 2))
+        sku_txt = f"SKU: {it['sku']}" if it.get("sku") else "SKU: \u2014"
+        ctk.CTkLabel(mid, text=f"{sku_txt}  \u00b7  {it['unit']}",
+                     text_color="gray", font=self.f_muted).pack(side="left")
+        ctk.CTkLabel(mid, text=money(self._line_amount(it)),
+                     font=self.f_card_total).pack(side="right")
+
+        # Bottom row: qty stepper + editable rate + line discount + GST
+        bot = ctk.CTkFrame(card, fg_color="transparent")
+        bot.pack(fill="x", padx=12, pady=(2, 10))
+
+        step = ctk.CTkFrame(bot, fg_color="transparent")
+        step.pack(side="left")
+        ctk.CTkButton(step, text="\u2212", width=30, height=28,
+                      command=lambda: self.bump_qty_idx(tab, w, idx, -1)
+                      ).pack(side="left")
+        ctk.CTkLabel(step, text=f"{it['qty']:g} {it['unit']}", width=90,
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(
+                         side="left", padx=4)
+        ctk.CTkButton(step, text="+", width=30, height=28,
+                      command=lambda: self.bump_qty_idx(tab, w, idx, +1)
+                      ).pack(side="left")
+
+        ctk.CTkLabel(bot, text="Rate \u20b9", text_color="gray",
+                     font=self.f_muted).pack(side="left", padx=(14, 2))
+        rate_e = ctk.CTkEntry(bot, width=90)
+        rate_e.insert(0, f"{it['price']:g}")
+        rate_e.pack(side="left")
+        ctk.CTkLabel(bot, text="Disc \u20b9", text_color="gray",
+                     font=self.f_muted).pack(side="left", padx=(10, 2))
+        disc_e = ctk.CTkEntry(bot, width=70)
+        if it["line_discount"]:
+            disc_e.insert(0, f"{it['line_discount']:g}")
+        disc_e.pack(side="left")
+        ctk.CTkLabel(bot, text=f"GST {it['gst_percent']:g}%",
+                     text_color="gray", font=self.f_muted).pack(
+                         side="left", padx=10)
+
+        def commit(_e=None):
+            self._commit_card_field(tab, w, idx, rate_e, disc_e)
+
+        rate_e.bind("<Return>", commit)
+        disc_e.bind("<Return>", commit)
+        rate_e.bind("<FocusOut>", commit)
+        disc_e.bind("<FocusOut>", commit)
+
+        # Selection: click selects the card, double-click opens the editor
+        def on_click(_e=None):
+            self._select_card(tab, w, idx)
+            try:
+                card.focus_set()
+            except Exception:
+                pass
+
+        def on_dbl(_e=None):
+            self.edit_line_idx(tab, w, idx)
+
+        card.bind("<Button-1>", on_click)
+        card.bind("<Double-1>", on_dbl)
+        name.bind("<Button-1>", on_click)
+        name.bind("<Double-1>", on_dbl)
+        # + / - on the focused card adjust its quantity
+        card.bind("<plus>", lambda e: self.bump_qty_idx(tab, w, idx, +1))
+        card.bind("<KP_Add>", lambda e: self.bump_qty_idx(tab, w, idx, +1))
+        card.bind("<minus>", lambda e: self.bump_qty_idx(tab, w, idx, -1))
+        card.bind("<KP_Subtract>",
+                  lambda e: self.bump_qty_idx(tab, w, idx, -1))
+        return card
+
+    def _commit_card_field(self, tab, w, idx, rate_e, disc_e):
+        """Apply quick-edit rate/discount from a card; revert on bad input."""
+        try:
+            if idx >= len(tab.items):
+                return
+            it = tab.items[idx]
+            price = float(rate_e.get().strip() or it["price"])
+            disc = float(disc_e.get().strip() or 0)
+            assert price >= 0 and disc >= 0
+        except Exception:
+            try:
+                rate_e.delete(0, "end")
+                rate_e.insert(0, f"{tab.items[idx]['price']:g}")
+                disc_e.delete(0, "end")
+                if tab.items[idx]["line_discount"]:
+                    disc_e.insert(0, f"{tab.items[idx]['line_discount']:g}")
+            except Exception:
+                pass
+            return
+        if price != it["price"] or disc != it["line_discount"]:
+            it["price"], it["line_discount"] = price, disc
+            w["card_sel"] = idx
+            self._refresh_totals(tab.name)
+
+    def _select_card(self, tab, w, idx):
+        w["card_sel"] = idx
+        for i, c in enumerate(w.get("card_widgets", [])):
+            try:
+                if not c.winfo_exists():
+                    continue
+                if i == idx:
+                    c.configure(border_width=2, border_color=self.ACCENT)
+                else:
+                    c.configure(border_width=1,
+                                border_color=self.CARD_BORDER)
+            except Exception:
+                pass
+
+    def _flash_card(self, w, idx):
+        """Briefly highlight a card (used when a duplicate merges into it)."""
+        cards = w.get("card_widgets", [])
+        if idx >= len(cards):
+            return
+        card = cards[idx]
+        try:
+            card.configure(fg_color=("#d9f2e3", "#1c4632"))
+            self.after(500, lambda: card.configure(fg_color=self.CARD_BG)
+                       if card.winfo_exists() else None)
+        except Exception:
+            pass
+
+    def _refresh_totals(self, name, flash_idx=None):
         if name not in self.tabs:
             return
         tab, w = self.tabs[name]
-        for r in w["tv"].get_children():
-            w["tv"].delete(r)
-        for it in tab.items:
-            taxable = max(it["qty"] * it["price"] - it["line_discount"], 0)
-            amt = taxable * (1 + it["gst_percent"] / 100)
-            # Low-stock indicator: qty on this bill vs live stock level
-            warn = ""
-            if it.get("product_id"):
-                p = self.db.get_product(it["product_id"])
-                if p and p["stock"] - it["qty"] <= p["low_stock_threshold"]:
-                    warn = "\u26a0 "
-            w["tv"].insert("", "end", values=(
-                warn + it["name"], f"{it['qty']:g} {it['unit']}",
-                money(it["price"]),
-                money(it["line_discount"]) if it["line_discount"] else "\u2014",
-                f"{it['gst_percent']:g}%", money(amt)))
+        self._render_cards(tab, w, flash_idx)
         t = tab.totals(self.db)
         w["tot_lbl"].configure(
-            text=f"Subtotal {money(t['subtotal'])}   \u00b7   "
-                 f"GST {money(t['gst_total'])}   \u00b7   "
-                 f"Bill disc. {money(t['discount'])}   \u00b7   "
-                 f"Round-off {money(t['round_off'])}")
+            text=f"Subtotal  {money(t['subtotal'])}      "
+                 f"Bill disc.  {money(t['discount'])}      "
+                 f"Round-off  {money(t['round_off'])}\n"
+                 f"GST  {money(t['gst_total'])}")
         w["grand_lbl"].configure(text=f"Total  {money(t['grand_total'])}")
         # Inline validation warnings (no popups needed while billing)
         problems = []
