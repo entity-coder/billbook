@@ -15,6 +15,7 @@ from tkinter import ttk
 
 import invoices
 import printing
+from db import data_dir
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -110,6 +111,7 @@ NAV = [
     ("Customers", "customers"),
     ("Invoices", "invoices"),
     ("Reports", "reports"),
+    ("Invoice Design", "invoice_design"),
     ("Backup", "backup"),
     ("Settings", "settings"),
 ]
@@ -181,7 +183,9 @@ class App(ctk.CTk):
         screen_cls = {"dashboard": DashboardFrame, "billing": BillingFrame,
                       "products": ProductsFrame, "stock": StockFrame,
                       "customers": CustomersFrame, "invoices": InvoicesFrame,
-                      "reports": ReportsFrame, "backup": BackupFrame,
+                      "reports": ReportsFrame,
+                      "invoice_design": InvoiceDesignFrame,
+                      "backup": BackupFrame,
                       "settings": SettingsFrame}[key]
         screen = screen_cls(self.content, self.db, self)
         screen.grid(row=0, column=0, sticky="nsew")
@@ -1442,6 +1446,153 @@ ACCENTS = {"Green": "#1f6f43", "Blue": "#0b5fa5", "Maroon": "#8f1d17",
            "Orange": "#b26a00", "Purple": "#5b2d8e", "Black": "#222222"}
 
 
+def render_invoice_preview(container, prof, bill, items, prefs):
+    """Populate `container` with a widget-based invoice preview from the
+    effective prefs. Shared by PrintDialog (real bill) and the Invoice
+    Design screen (sample bill). An approximation of the PDF layout —
+    the PDF is the exact render."""
+    for ch in container.winfo_children():
+        ch.destroy()
+    accent = prefs.get("accent", "#1f6f43") or "#1f6f43"
+    fg = "black"
+    narrow = prefs.get("paper") == "thermal"
+
+    head = ctk.CTkFrame(container, fg_color="white")
+    head.pack(fill="x", pady=4)
+    # Logo (thumbnail) when one is stored and readable
+    logo_path = prefs.get("logo_path") or ""
+    if logo_path:
+        try:
+            from PIL import Image
+            img = Image.open(logo_path)
+            img.thumbnail((90, 60))
+            photo = ctk.CTkImage(light_image=img, dark_image=img,
+                                 size=img.size)
+            lbl = ctk.CTkLabel(head, image=photo, text="", fg_color="white")
+            lbl.pack()
+            container._logo_img = photo  # keep a reference (no GC)
+        except Exception:
+            pass
+    ctk.CTkLabel(head, text=prof.get("shop_name") or "Your Shop Name",
+                 text_color=accent, fg_color="white",
+                 font=ctk.CTkFont(size=18 if not narrow else 13,
+                                   weight="bold")).pack()
+    if prefs.get("show_tagline", True) and prof.get("shop_tagline"):
+        ctk.CTkLabel(head, text=prof["shop_tagline"], text_color="gray",
+                     fg_color="white", font=ctk.CTkFont(size=11)).pack()
+    if prefs.get("show_address", True) and prof.get("shop_address"):
+        ctk.CTkLabel(head, text=prof["shop_address"], text_color="gray",
+                     fg_color="white", font=ctk.CTkFont(size=11)).pack()
+    if prefs.get("show_phone", True) and prof.get("shop_phone"):
+        ctk.CTkLabel(head, text=f"Phone: {prof['shop_phone']}",
+                     text_color="gray", fg_color="white",
+                     font=ctk.CTkFont(size=11)).pack()
+    if prefs.get("show_gstin") and prof.get("shop_gstin"):
+        ctk.CTkLabel(head, text=f"GSTIN: {prof['shop_gstin']}",
+                     text_color="gray", fg_color="white",
+                     font=ctk.CTkFont(size=11)).pack()
+    if prefs.get("header_note"):
+        ctk.CTkLabel(head, text=prefs["header_note"], text_color=fg,
+                     fg_color="white", font=ctk.CTkFont(size=11)).pack()
+    ctk.CTkFrame(container, height=3, fg_color=accent).pack(fill="x",
+                                                           pady=4)
+    ctk.CTkLabel(container,
+                 text=prefs.get("invoice_title") or "TAX INVOICE",
+                 text_color=accent, fg_color="white",
+                 font=ctk.CTkFont(size=14 if not narrow else 12,
+                                   weight="bold")).pack()
+
+    b = bill
+    ctk.CTkLabel(container,
+                 text=f"Bill {b['bill_no']}  \u00b7  {b['date']}  \u00b7  "
+                      f"{b.get('payment_type', '')}"
+                      + ("  \u00b7  CREDIT \u2014 due"
+                         if prefs.get("show_payment_badge", True)
+                         and b.get("payment_type") == "Credit" else ""),
+                 text_color=fg, fg_color="white",
+                 font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
+    cust_line = f"Customer: {b.get('customer_name') or 'Walk-in'}"
+    if prefs.get("show_customer_address", True) and b.get("customer_address"):
+        cust_line += f"  \u00b7  {b['customer_address']}"
+    ctk.CTkLabel(container, text=cust_line,
+                 text_color=fg, fg_color="white",
+                 font=ctk.CTkFont(size=12)).pack(anchor="w")
+
+    # Item lines
+    cols = ["Item", "Qty", "Rate"]
+    if prefs.get("show_discounts"):
+        cols.append("Disc.")
+    cols += ["GST", "Amount"]
+    grid = ctk.CTkFrame(container, fg_color="white")
+    grid.pack(fill="x", pady=6)
+    for j, c in enumerate(cols):
+        ctk.CTkLabel(grid, text=c, text_color="white", fg_color=accent,
+                     font=ctk.CTkFont(size=11, weight="bold")).grid(
+                         row=0, column=j, sticky="ew", padx=1)
+        grid.grid_columnconfigure(j, weight=1)
+    for i, it in enumerate(items, 1):
+        vals = [it["name"] + (f"\n{it.get('sku', '')}"
+                              if prefs.get("show_item_codes")
+                              and it.get("sku") else ""),
+                f"{it['qty']:g}", f"{money(it['price'])}"]
+        if prefs.get("show_discounts"):
+            vals.append(money(it.get("line_discount", 0))
+                        if it.get("line_discount") else "\u2014")
+        taxable = max(it["qty"] * it["price"]
+                      - it.get("line_discount", 0), 0)
+        vals += [f"{it.get('gst_percent', 0):g}%",
+                 money(taxable * (1 + it.get("gst_percent", 0) / 100))]
+        for j, v in enumerate(vals):
+            ctk.CTkLabel(grid, text=v, text_color=fg, fg_color="white",
+                         font=ctk.CTkFont(size=11)).grid(
+                             row=i, column=j, sticky="w", padx=2, pady=2)
+
+    if prefs.get("show_gst_table", True):
+        ctk.CTkLabel(container, text="(GST slab breakup table \u2014 on the PDF)",
+                     text_color="gray", fg_color="white",
+                     font=ctk.CTkFont(size=10, slant="italic")).pack(anchor="w")
+
+    tot = ctk.CTkFrame(container, fg_color="white")
+    tot.pack(fill="x", pady=6)
+    rows = [("Subtotal", money(b["subtotal"])),
+            ("GST", money(b["gst_total"]))]
+    if prefs.get("show_discounts") and float(b.get("discount", 0) or 0):
+        rows.append(("Discount", money(b["discount"])))
+    if prefs.get("show_roundoff", True):
+        rows.append(("Round off", money(b["round_off"])))
+    for label, val in rows:
+        r = ctk.CTkFrame(tot, fg_color="white")
+        r.pack(fill="x")
+        ctk.CTkLabel(r, text=label, text_color=fg,
+                     fg_color="white").pack(side="left")
+        ctk.CTkLabel(r, text=val, text_color=fg,
+                     fg_color="white").pack(side="right")
+    r = ctk.CTkFrame(tot, fg_color="white")
+    r.pack(fill="x", pady=(4, 0))
+    ctk.CTkLabel(r, text="Grand Total", text_color=accent, fg_color="white",
+                 font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
+    ctk.CTkLabel(r, text=money(b["grand_total"]), text_color=accent,
+                 fg_color="white",
+                 font=ctk.CTkFont(size=15, weight="bold")).pack(side="right")
+    if prefs.get("footer_note"):
+        ctk.CTkLabel(container, text=prefs["footer_note"],
+                     text_color="gray", fg_color="white",
+                     font=ctk.CTkFont(size=11)).pack(pady=(8, 0))
+    if prefs.get("show_thankyou", True):
+        ctk.CTkLabel(container,
+                     text=prefs.get("thankyou_text")
+                     or "Thank you for your business!",
+                     text_color=accent, fg_color="white",
+                     font=ctk.CTkFont(size=11, weight="bold")).pack(pady=(2, 8))
+    if prefs.get("show_signature", True) and not narrow:
+        sig = ctk.CTkFrame(container, fg_color="white")
+        sig.pack(fill="x", pady=(10, 0))
+        ctk.CTkLabel(sig, text="Customer signature", text_color="gray",
+                     fg_color="white").pack(side="left")
+        ctk.CTkLabel(sig, text=f"For {prof.get('shop_name') or 'Shop'}",
+                     text_color="gray", fg_color="white").pack(side="right")
+
+
 class PrintDialog(ctk.CTkToplevel):
     """Choose what the bill shows, pick the printer, tweak notes/colors/paper,
     live preview, then print the PDF directly (no browser, no extension) or
@@ -1571,98 +1722,16 @@ class PrintDialog(ctk.CTkToplevel):
             "footer_note": self.footer_e.get(),
         }
 
+    def effective_prefs(self):
+        """Saved invoice-design settings + this dialog's per-print tweaks."""
+        prefs = self.db.print_prefs()
+        prefs.update(self.current_prefs())
+        return prefs
+
     def render_preview(self):
         """Rebuild the preview from the current preference widgets."""
-        prefs = self.current_prefs()
-        prof = self.db.shop_profile()
-        for ch in self.preview.winfo_children():
-            ch.destroy()
-        accent = prefs["accent"]
-        fg = "black"
-        narrow = prefs["paper"] == "thermal"
-
-        head = ctk.CTkFrame(self.preview, fg_color="white")
-        head.pack(fill="x", pady=4)
-        ctk.CTkLabel(head, text=prof.get("shop_name") or "Your Shop Name",
-                     text_color=accent, fg_color="white",
-                     font=ctk.CTkFont(size=18 if not narrow else 13,
-                                       weight="bold")).pack()
-        if prof.get("shop_address"):
-            ctk.CTkLabel(head, text=prof["shop_address"], text_color="gray",
-                         fg_color="white", font=ctk.CTkFont(size=11)).pack()
-        if prefs["show_gstin"] and prof.get("shop_gstin"):
-            ctk.CTkLabel(head, text=f"GSTIN: {prof['shop_gstin']}",
-                         text_color="gray", fg_color="white",
-                         font=ctk.CTkFont(size=11)).pack()
-        if prefs["header_note"]:
-            ctk.CTkLabel(head, text=prefs["header_note"], text_color=fg,
-                         fg_color="white", font=ctk.CTkFont(size=11)).pack()
-        ctk.CTkFrame(self.preview, height=3, fg_color=accent).pack(fill="x",
-                                                                   pady=4)
-
-        b = self.bill
-        ctk.CTkLabel(self.preview,
-                     text=f"Bill {b['bill_no']}  \u00b7  {b['date']}  \u00b7  "
-                          f"{b.get('payment_type', '')}",
-                     text_color=fg, fg_color="white",
-                     font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(self.preview,
-                     text=f"Customer: {b.get('customer_name') or 'Walk-in'}",
-                     text_color=fg, fg_color="white",
-                     font=ctk.CTkFont(size=12)).pack(anchor="w")
-
-        # Item lines
-        cols = ["Item", "Qty", "Rate"]
-        if prefs["show_discounts"]:
-            cols.append("Disc.")
-        cols += ["GST", "Amount"]
-        grid = ctk.CTkFrame(self.preview, fg_color="white")
-        grid.pack(fill="x", pady=6)
-        for j, c in enumerate(cols):
-            ctk.CTkLabel(grid, text=c, text_color="white", fg_color=accent,
-                         font=ctk.CTkFont(size=11, weight="bold")).grid(
-                             row=0, column=j, sticky="ew", padx=1)
-            grid.grid_columnconfigure(j, weight=1)
-        for i, it in enumerate(self.items, 1):
-            vals = [it["name"] + (f"\n{it.get('sku', '')}"
-                                  if prefs["show_item_codes"]
-                                  and it.get("sku") else ""),
-                    f"{it['qty']:g}", f"{money(it['price'])}"]
-            if prefs["show_discounts"]:
-                vals.append(money(it.get("line_discount", 0))
-                            if it.get("line_discount") else "\u2014")
-            taxable = max(it["qty"] * it["price"]
-                          - it.get("line_discount", 0), 0)
-            vals += [f"{it.get('gst_percent', 0):g}%",
-                     money(taxable * (1 + it.get("gst_percent", 0) / 100))]
-            for j, v in enumerate(vals):
-                ctk.CTkLabel(grid, text=v, text_color=fg, fg_color="white",
-                             font=ctk.CTkFont(size=11)).grid(
-                                 row=i, column=j, sticky="w", padx=2, pady=2)
-
-        tot = ctk.CTkFrame(self.preview, fg_color="white")
-        tot.pack(fill="x", pady=6)
-        for label, val in (("Subtotal", money(b["subtotal"])),
-                           ("GST", money(b["gst_total"])),
-                           ("Discount", money(b["discount"])),
-                           ("Round off", money(b["round_off"]))):
-            r = ctk.CTkFrame(tot, fg_color="white")
-            r.pack(fill="x")
-            ctk.CTkLabel(r, text=label, text_color=fg,
-                         fg_color="white").pack(side="left")
-            ctk.CTkLabel(r, text=val, text_color=fg,
-                         fg_color="white").pack(side="right")
-        r = ctk.CTkFrame(tot, fg_color="white")
-        r.pack(fill="x", pady=(4, 0))
-        ctk.CTkLabel(r, text="Grand Total", text_color=accent, fg_color="white",
-                     font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
-        ctk.CTkLabel(r, text=money(b["grand_total"]), text_color=accent,
-                     fg_color="white",
-                     font=ctk.CTkFont(size=15, weight="bold")).pack(side="right")
-        if prefs["footer_note"]:
-            ctk.CTkLabel(self.preview, text=prefs["footer_note"],
-                         text_color="gray", fg_color="white",
-                         font=ctk.CTkFont(size=11)).pack(pady=8)
+        render_invoice_preview(self.preview, self.db.shop_profile(),
+                               self.bill, self.items, self.effective_prefs())
 
     def save_defaults(self):
         p = self.current_prefs()
@@ -1688,7 +1757,7 @@ class PrintDialog(ctk.CTkToplevel):
 
     def do_preview(self):
         """Open the PDF invoice in the default viewer (print by hand)."""
-        p = self.current_prefs()
+        p = self.effective_prefs()
         try:
             path = invoices.write_invoice_pdf(
                 self.bill, self.items, self.db.shop_profile(), p)
@@ -1702,7 +1771,7 @@ class PrintDialog(ctk.CTkToplevel):
 
     def do_print(self):
         """Generate the PDF invoice and send it straight to the printer."""
-        p = self.current_prefs()
+        p = self.effective_prefs()
         printer = self._printer_choice()
         copies = int(self._copies())
         try:
@@ -1734,6 +1803,341 @@ class PrintDialog(ctk.CTkToplevel):
 # ---------------------------------------------------------------------------
 # 6. Customers — khata ledger
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 5b. Invoice Design — customize the invoice with a live preview
+# ---------------------------------------------------------------------------
+DESIGN_SAMPLE_BILL = {
+    "bill_no": "BB-0001", "date": "16-10-2026",
+    "customer_name": "Sample Customer", "customer_phone": "98765 43210",
+    "customer_address": "Main Bazaar, Chikhli",
+    "payment_type": "Credit", "subtotal": 4350.00, "discount": 100.00,
+    "gst_total": 212.50, "round_off": 0.50, "grand_total": 4463.00,
+}
+DESIGN_SAMPLE_ITEMS = [
+    {"name": "Wheat Flour 5kg", "sku": "WF5", "qty": 10, "unit": "bag",
+     "price": 240.00, "line_discount": 100.00, "gst_percent": 5},
+    {"name": "Sugar 1kg", "sku": "SG1", "qty": 20, "unit": "kg",
+     "price": 45.00, "line_discount": 0, "gst_percent": 5},
+    {"name": "Basmati Rice 25kg", "sku": "BR25", "qty": 2, "unit": "bag",
+     "price": 1450.00, "line_discount": 0, "gst_percent": 0},
+]
+
+
+class InvoiceDesignFrame(ctk.CTkFrame):
+    """Customize every part of the invoice with an instant live preview.
+
+    The preview renders the REAL PDF when PyMuPDF is available, otherwise
+    a widget approximation (same path the Print dialog uses)."""
+
+    def __init__(self, parent, db, app):
+        super().__init__(parent, fg_color="transparent")
+        self.db, self.app = db, app
+        prefs = db.print_prefs()
+
+        ctk.CTkLabel(self, text="Invoice Design",
+                     font=ctk.CTkFont(size=22, weight="bold")).pack(
+                         anchor="w", pady=(4, 2))
+        ctk.CTkLabel(self, text="Everything here is saved and used on every "
+                                "invoice you print.",
+                     text_color="gray").pack(anchor="w", pady=(0, 8))
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True)
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+
+        # ---- left: controls ------------------------------------------------
+        left = ctk.CTkScrollableFrame(body, width=340)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        def section(title):
+            ctk.CTkLabel(left, text=title,
+                         font=ctk.CTkFont(size=14, weight="bold")).pack(
+                             anchor="w", pady=(10, 4), padx=4)
+
+        self.toggles = {}
+
+        def toggle(key, label, default=True):
+            v = ctk.BooleanVar(value=prefs.get(key, default))
+            ctk.CTkCheckBox(left, text=label, variable=v,
+                            command=self.refresh_preview).pack(
+                                anchor="w", padx=4, pady=2)
+            self.toggles[key] = v
+
+        section("Shop header")
+        toggle("show_tagline", "Show tagline")
+        toggle("show_address", "Show address")
+        toggle("show_phone", "Show phone")
+        toggle("show_gstin", "Show GSTIN")
+        ctk.CTkLabel(left, text="Shop logo (PNG/JPG)").pack(anchor="w",
+                                                             padx=4, pady=(6, 2))
+        self.logo_row = ctk.CTkFrame(left, fg_color="transparent")
+        self.logo_row.pack(fill="x", padx=4)
+        ctk.CTkButton(self.logo_row, text="Choose logo\u2026", width=130,
+                      command=self.choose_logo).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(self.logo_row, text="Remove", width=80,
+                      fg_color="gray", command=self.remove_logo).pack(
+                          side="left")
+        self.logo_lbl = ctk.CTkLabel(left, text="", text_color="gray",
+                                     font=ctk.CTkFont(size=11))
+        self.logo_lbl.pack(anchor="w", padx=4)
+        self._pending_logo = prefs.get("logo_path") or ""
+        self._show_logo_name()
+
+        section("Title & text")
+        ctk.CTkLabel(left, text="Invoice title").pack(anchor="w", padx=4)
+        self.title_e = ctk.CTkEntry(left)
+        self.title_e.insert(0, prefs.get("invoice_title") or "TAX INVOICE")
+        self.title_e.pack(fill="x", padx=4, pady=(0, 4))
+        self.title_e.bind("<KeyRelease>", lambda e: self.refresh_preview())
+        ctk.CTkLabel(left, text="Text size").pack(anchor="w", padx=4)
+        self.font_var = ctk.StringVar(
+            value={"compact": "Compact", "standard": "Standard",
+                   "large": "Large"}.get(prefs.get("font_size"), "Standard"))
+        ctk.CTkSegmentedButton(left, values=["Compact", "Standard", "Large"],
+                               variable=self.font_var,
+                               command=lambda v: self.refresh_preview()).pack(
+                                   fill="x", padx=4, pady=(0, 4))
+        ctk.CTkLabel(left, text="Accent color").pack(anchor="w", padx=4)
+        inv = {v: k for k, v in ACCENTS.items()}
+        self.accent_var = ctk.StringVar(value=inv.get(prefs["accent"],
+                                                     "Green"))
+        ctk.CTkOptionMenu(left, values=list(ACCENTS.keys()),
+                          variable=self.accent_var,
+                          command=lambda v: self.refresh_preview()).pack(
+                              fill="x", padx=4, pady=(0, 4))
+
+        section("Columns & tables")
+        toggle("show_item_codes", "Show item codes / SKU")
+        toggle("show_discounts", "Show discount column")
+        toggle("show_hsn", "Show HSN column (A4 only)", default=False)
+        toggle("show_gst_table", "Show GST slab breakup table")
+
+        section("Bill details")
+        toggle("show_roundoff", "Show round-off line")
+        toggle("show_customer_address", "Show customer address")
+        toggle("show_payment_badge", "Show CREDIT \u2014 due badge")
+        toggle("show_signature", "Show signature lines (A4 only)")
+
+        section("Footer")
+        ctk.CTkLabel(left, text="Terms & conditions / notes").pack(
+            anchor="w", padx=4)
+        self.terms_t = ctk.CTkTextbox(left, height=70)
+        self.terms_t.insert("1.0", prefs.get("footer_note") or "")
+        self.terms_t.pack(fill="x", padx=4, pady=(0, 4))
+        self.terms_t.bind("<KeyRelease>", lambda e: self.refresh_preview())
+        toggle("show_thankyou", "Show thank-you message")
+        ctk.CTkLabel(left, text="Thank-you text").pack(anchor="w", padx=4)
+        self.thankyou_e = ctk.CTkEntry(left)
+        self.thankyou_e.insert(0, prefs.get("thankyou_text")
+                               or "Thank you for your business!")
+        self.thankyou_e.pack(fill="x", padx=4, pady=(0, 4))
+        self.thankyou_e.bind("<KeyRelease>", lambda e: self.refresh_preview())
+
+        section("Paper & numbering")
+        ctk.CTkLabel(left, text="Default paper").pack(anchor="w", padx=4)
+        self.paper_var = ctk.StringVar(
+            value="Thermal 80mm" if prefs.get("paper") == "thermal" else "A4")
+        ctk.CTkSegmentedButton(left, values=["A4", "Thermal 80mm"],
+                               variable=self.paper_var,
+                               command=lambda v: self.refresh_preview()).pack(
+                                   fill="x", padx=4, pady=(0, 4))
+        ctk.CTkLabel(left, text="Default copies").pack(anchor="w", padx=4)
+        self.copies_e = ctk.CTkEntry(left, width=80)
+        self.copies_e.insert(0, db.get_setting("print_copies", "1") or "1")
+        self.copies_e.pack(anchor="w", padx=4, pady=(0, 4))
+        ctk.CTkLabel(left, text="Invoice number prefix").pack(anchor="w",
+                                                              padx=4)
+        self.prefix_e = ctk.CTkEntry(left, width=120)
+        self.prefix_e.insert(0, prefs.get("number_prefix") or "BB-")
+        self.prefix_e.pack(anchor="w", padx=4, pady=(0, 2))
+        nxt = int(db.get_setting("bill_counter", "1") or 1)
+        self.next_lbl = ctk.CTkLabel(
+            left,
+            text=f"Next bill number: {(prefs.get('number_prefix') or 'BB-')}"
+                 f"{nxt:04d}  (updates when you type)",
+            text_color="gray", font=ctk.CTkFont(size=11))
+        self.next_lbl.pack(anchor="w", padx=4, pady=(0, 4))
+        self.prefix_e.bind("<KeyRelease>", self._update_next_preview)
+
+        self.err_lbl = ctk.CTkLabel(left, text="", text_color="#b3261e",
+                                    font=ctk.CTkFont(size=12))
+        self.err_lbl.pack(anchor="w", padx=4, pady=(4, 0))
+        ctk.CTkButton(left, text="Save invoice design", fg_color="#1f6f43",
+                      hover_color="#175733",
+                      command=self.save).pack(fill="x", padx=4, pady=12)
+
+        # ---- right: live preview ------------------------------------------
+        right = ctk.CTkFrame(body)
+        right.grid(row=0, column=1, sticky="nsew")
+        ctk.CTkLabel(right, text="Live preview",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(
+                         anchor="w", padx=10, pady=(8, 2))
+        ctk.CTkLabel(right, text="Real PDF render when possible \u2014 "
+                                 "otherwise a close approximation.",
+                     text_color="gray",
+                     font=ctk.CTkFont(size=11)).pack(anchor="w", padx=10)
+        self.preview = ctk.CTkScrollableFrame(right, fg_color="white")
+        self.preview.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        self.refresh_preview()
+
+    # -- helpers ------------------------------------------------------------
+    def _update_next_preview(self, _e=None):
+        nxt = int(self.db.get_setting("bill_counter", "1") or 1)
+        self.next_lbl.configure(
+            text=f"Next bill number: {(self.prefix_e.get().strip() or 'BB-')}"
+                 f"{nxt:04d}  (updates when you type)")
+
+    def _show_logo_name(self):
+        p = self._pending_logo
+        self.logo_lbl.configure(
+            text=f"Logo: {Path(p).name}" if p else "No logo set")
+
+    def choose_logo(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Choose shop logo",
+            filetypes=[("Images", "*.png *.jpg *.jpeg"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            dest_dir = data_dir() / "logos"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / ("logo" + Path(path).suffix.lower())
+            shutil.copy2(path, dest)
+            self._pending_logo = str(dest)
+            self._show_logo_name()
+            self.refresh_preview()
+        except Exception as e:
+            messagebox.showerror("Logo", f"Could not use that file:\n{e}")
+
+    def remove_logo(self):
+        self._pending_logo = ""
+        self._show_logo_name()
+        self.refresh_preview()
+
+    def collect_prefs(self):
+        """Prefs dict shaped exactly like db.print_prefs()."""
+        font_map = {"Compact": "compact", "Standard": "standard",
+                    "Large": "large"}
+        return {
+            "accent": ACCENTS[self.accent_var.get()],
+            "paper": ("thermal" if self.paper_var.get() == "Thermal 80mm"
+                      else "A4"),
+            "show_gstin": self.toggles["show_gstin"].get(),
+            "show_item_codes": self.toggles["show_item_codes"].get(),
+            "show_discounts": self.toggles["show_discounts"].get(),
+            "header_note": self.db.get_setting("print_header_note"),
+            "footer_note": self.terms_t.get("1.0", "end").strip(),
+            "invoice_title": self.title_e.get().strip() or "TAX INVOICE",
+            "font_size": font_map[self.font_var.get()],
+            "show_tagline": self.toggles["show_tagline"].get(),
+            "show_address": self.toggles["show_address"].get(),
+            "show_phone": self.toggles["show_phone"].get(),
+            "show_gst_table": self.toggles["show_gst_table"].get(),
+            "show_hsn": self.toggles["show_hsn"].get(),
+            "show_roundoff": self.toggles["show_roundoff"].get(),
+            "show_customer_address":
+                self.toggles["show_customer_address"].get(),
+            "show_payment_badge": self.toggles["show_payment_badge"].get(),
+            "show_signature": self.toggles["show_signature"].get(),
+            "show_thankyou": self.toggles["show_thankyou"].get(),
+            "thankyou_text": (self.thankyou_e.get().strip()
+                              or "Thank you for your business!"),
+            "logo_path": self._pending_logo,
+            "number_prefix": self.prefix_e.get().strip() or "BB-",
+        }
+
+    def _render_pdf_image(self, prefs, prof):
+        """Render the sample invoice PDF to a CTkImage. None when PyMuPDF
+        is unavailable or rendering fails (caller falls back to the
+        widget preview)."""
+        try:
+            import fitz  # PyMuPDF — optional
+            from PIL import Image
+        except ImportError:
+            return None
+        try:
+            import tempfile
+            from printing import generate_invoice_pdf
+            tmp = Path(tempfile.gettempdir()) / "billbook_design_preview.pdf"
+            generate_invoice_pdf(DESIGN_SAMPLE_BILL, DESIGN_SAMPLE_ITEMS,
+                                 prof, prefs, tmp)
+            doc = fitz.open(str(tmp))
+            pix = doc[0].get_pixmap(dpi=110)
+            doc.close()
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            max_h = 1000
+            if img.height > max_h:
+                img = img.resize((int(img.width * max_h / img.height), max_h))
+            return ctk.CTkImage(light_image=img, dark_image=img,
+                                size=img.size)
+        except Exception:
+            return None
+
+    def refresh_preview(self):
+        prefs = self.collect_prefs()
+        prof = self.db.shop_profile()
+        for ch in self.preview.winfo_children():
+            ch.destroy()
+        photo = self._render_pdf_image(prefs, prof)
+        if photo is not None:
+            lbl = ctk.CTkLabel(self.preview, image=photo, text="",
+                               fg_color="white")
+            lbl.pack(padx=8, pady=8)
+            self.preview._pdf_img = photo  # keep a reference (no GC)
+        else:
+            render_invoice_preview(self.preview, prof, DESIGN_SAMPLE_BILL,
+                                   DESIGN_SAMPLE_ITEMS, prefs)
+
+    def save(self):
+        self.err_lbl.configure(text="")
+        title = self.title_e.get().strip()
+        if not title:
+            self.err_lbl.configure(text="Invoice title can't be empty.")
+            return
+        try:
+            copies = int(self.copies_e.get() or 1)
+            if copies < 1:
+                raise ValueError
+        except ValueError:
+            self.err_lbl.configure(
+                text="Default copies must be a whole number of 1 or more.")
+            return
+        prefix = self.prefix_e.get().strip()
+        if not prefix or len(prefix) > 8 or not all(
+                ch.isalnum() or ch in "-_/" for ch in prefix):
+            self.err_lbl.configure(
+                text="Prefix: 1\u20138 characters, letters/digits/- _ / only.")
+            return
+        p = self.collect_prefs()
+        self.db.set_setting("print_accent", p["accent"])
+        self.db.set_setting("print_paper", p["paper"])
+        self.db.set_setting("print_copies", str(copies))
+        self.db.set_setting("invoice_title", title)
+        self.db.set_setting("invoice_font_size", p["font_size"])
+        for key in ("show_tagline", "show_address", "show_phone",
+                    "show_hsn", "show_gst_table", "show_roundoff",
+                    "show_customer_address", "show_payment_badge",
+                    "show_signature", "show_thankyou"):
+            self.db.set_setting(f"invoice_{key}", "1" if p[key] else "0")
+        # show_gstin / show_item_codes / show_discounts keep their
+        # print_* keys (Print dialog + Settings write the same keys).
+        self.db.set_setting("print_show_gstin",
+                            "1" if p["show_gstin"] else "0")
+        self.db.set_setting("print_show_item_codes",
+                            "1" if p["show_item_codes"] else "0")
+        self.db.set_setting("print_show_discounts",
+                            "1" if p["show_discounts"] else "0")
+        self.db.set_setting("print_footer_note", p["footer_note"])
+        self.db.set_setting("invoice_thankyou_text", p["thankyou_text"])
+        self.db.set_setting("invoice_logo_path", p["logo_path"])
+        self.db.set_setting("invoice_number_prefix", prefix)
+        messagebox.showinfo("Invoice Design", "Invoice design saved.\n"
+                            "It applies to every invoice from now on.")
+        self.refresh_preview()
+
+
 class CustomersFrame(ctk.CTkFrame):
     def __init__(self, parent, db, app):
         super().__init__(parent, fg_color="transparent")
