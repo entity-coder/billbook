@@ -1,0 +1,15 @@
+name,sku,purchase_price,wholesale_price,retail_price,unit,gst_percent,stock,low_stock_threshold,supplier
+Tata Salt 1kg,8901030010010,118,124,132,packet,18,200,20,Tata Consumer
+Aashirvaad Atta 10kg,8901030010027,385,402,435,packet,5,60,10,ITC Distributors
+Fortune Sunflower Oil 1L,8901030010034,132,139,155,packet,5,150,25,Adani Wilmar
+Toor Dal Unpolished 1kg,8901030010041,142,150,168,kg,0,120,15,Local Mandi Supplier
+Sugar 1kg (Sulphurless),8901030010058,42,45,52,kg,0,300,40,Shree Traders
+Basmati Rice 5kg,8901030010065,640,672,720,packet,5,45,10,India Gate Depot
+Maggi Noodles 12-Pack,8901030010072,158,165,180,packet,18,180,30,Nestle Distributor
+Parle-G Gold 200g,8901030010089,22,24,28,packet,18,500,100,Parle Depot
+Amul Butter 500g,8901030010096,268,278,295,packet,12,80,15,Amul Distributor
+Tata Tea Gold 500g,8901030010102,232,242,258,packet,5,140,25,Tata Consumer
+Surf Excel Easy Wash 1kg,8901030010119,112,118,132,packet,18,160,30,HUL Distributor
+Colgate Max Fresh 150g,8901030010126,86,92,105,packet,18,220,40,Colgate Depot
+Haldiram's Bhujia 400g,8901030010133,98,104,118,packet,12,130,25,Haldiram Distributor
+Chana Kabuli 1kg,8901030010140,88,94,108,kg,5,110,15,Local Mandi Supplier

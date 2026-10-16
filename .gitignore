@@ -1,0 +1,6 @@
+billbook_data/
+__pycache__/
+*.pyc
+dist/
+build/
+*.spec
