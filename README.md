@@ -32,9 +32,11 @@ no Chrome extension needed.
   - Per-line GST breakup, round-off to the nearest rupee, sequential bill
     numbers (`BB-0001`, `BB-0002`, …).
   - Keyboard shortcuts for fast counters: **F2** new bill tab, **F3** jump to
-    product search, **Enter** adds a line, **+ / −** adjust the selected
-    line's quantity, **Esc** clears the entry row, **Ctrl+S** finalize,
-    **Ctrl+P** print/preview.
+    product search, **F4** choose customer, **Enter** adds a line,
+    **Tab** walks entry row → card qty → rate → discount, **Esc** clears the
+    entry row (or closes the customer picker), **Ctrl+S** finalize,
+    **Ctrl+P** print/preview. Every field is typeable — no mouse needed for
+    a full bill.
   - **Duplicate products merge** into one line; **low-stock warnings** (⚠)
     appear on lines that would push stock to/below the threshold; inline
     warnings (not popups) flag a missing customer or payment type in the
@@ -42,8 +44,11 @@ no Chrome extension needed.
     round-off, and the grand total.
 - **Product catalog** — name, SKU/barcode, purchase / wholesale / retail
   price, unit (pcs, kg, bag, box, litre…), GST %, stock, low-stock threshold,
-  supplier. Add/edit/delete, search, **bulk import/export via CSV**
-  (`sample_products.csv` included with 14 realistic FMCG rows).
+  supplier. Add/edit/delete (with validation: name required, numeric prices
+  and stock; delete is blocked for products on saved bills), search,
+  **bulk import/export via CSV** (`sample_products.csv` included with 14
+  realistic FMCG rows). The add/edit dialog is keyboard-friendly: it opens
+  with the name field focused, **Enter** saves, **Esc** closes.
 - **Stock management** — dedicated Stock IN screen (qty received, note for
   supplier) and Stock OUT (damage/returns), low-stock alerts, total stock
   value, and a full movement log (audit trail).
@@ -94,8 +99,13 @@ no Chrome extension needed.
     back to the original defaults, so old databases keep working.
 - **Reports** — day-wise / monthly sales totals, GST summary by slab, profit
   estimate (sale price − purchase price per line), top products.
-- **Backup/restore** — one-click backup of the database file; restore from a
-  backup with a safety check that it is a BillBook database.
+- **Backup/restore** — one-click backup writes a timestamped `.zip`
+  (`billbook_backup_YYYYMMDD_HHMMSS.zip`) with the database, all saved
+  invoice PDFs and the shop logo to any folder you pick (pen drive / Drive).
+  Restore accepts a `.zip` or a legacy `.db`, validates it is a BillBook
+  database, and always saves a safety copy of the current data first
+  (`billbook_data/backups/auto_before_restore_…db`) — then asks you to
+  restart the app.
 - **Shop profile** — one-time setup for shop name, tagline, address, phone,
   GSTIN — printed on every bill header.
 
@@ -221,22 +231,27 @@ needs one real test print on the shop's printer. And `print_pdf` never claims
 success it didn't get: on failure the app opens the PDF for manual printing.
 
 **Keyboard-first billing UX:** counters bill fast, so the billing screen is
-driven by keys — F2 new tab, F3 focus search, Enter add line, +/− adjust
-selected-line quantity, Esc clear the entry row, Ctrl+S finalize, Ctrl+P
-print. Shortcut hints are printed on the buttons themselves and in a footer
-label. Inline warnings (missing customer / payment type) live in the sticky
-totals footer instead of popping dialogs mid-flow. Small touches with real
-counter value: adding the same product twice merges the line instead of
-duplicating it, and a ⚠ marker appears on lines that would push stock to or
-below the low-stock threshold.
+driven by keys — F2 new tab, F3 focus search, F4 customer picker (Esc closes
+it), Enter adds a line, Tab walks the entry row then each card's
+qty → rate → discount fields, Ctrl+S finalize, Ctrl+P print. The focused
+field gets an accent border so the cashier always knows where they are, and
+committing a card field (Enter or focus-out) updates the line total in place
+without rebuilding the card — focus is never stolen mid-flow. Shortcut hints
+are printed on the buttons themselves and in a footer label. Inline warnings
+(missing customer / payment type) live in the sticky totals footer instead
+of popping dialogs mid-flow. Small touches with real counter value: adding
+the same product twice merges the line instead of duplicating it, and a ⚠
+marker appears on lines that would push stock to or below the low-stock
+threshold.
 
 **Product cards:** each bill line is its own bordered card, not a table row —
-product name prominent, SKU/unit muted, quantity stepper (− qty +), editable
-rate and line-discount fields right on the card, bold line total, × remove
-button, and the low-stock ⚠ badge when relevant. Clicking a card selects it
-(accent border); double-click opens the full line editor; adding a duplicate
-merges into the existing card and flashes it so the cashier sees where it
-went. An empty bill shows a clean "Bill is empty" placeholder.
+product name prominent, SKU/unit muted, a plain typed quantity field (no
++/− steppers), editable rate and line-discount fields right on the card,
+bold line total, × remove button, and the low-stock ⚠ badge when relevant.
+Clicking a card selects it (accent border); double-click opens the full line
+editor; adding a duplicate merges into the existing card and flashes it so
+the cashier sees where it went. An empty bill shows a clean "Bill is empty"
+placeholder.
 
 **Invoice design system:** every visual/textual part of the invoice is a
 database setting, edited in the **Invoice Design** sidebar screen with a
@@ -275,8 +290,10 @@ generated numbers — old bills keep theirs.
 - *Bill lines are cards, not table rows.* A ttk Treeview was cheaper, but at a
   busy counter the cashier needs big touch/click targets and per-line editing
   without opening dialogs — so each line is a bordered `CTkFrame` card with
-  its own stepper, rate/discount entries (committed on Enter/focus-out, with
-  revert-on-invalid), and remove button. Selection state is a plain index in
+  a typed quantity field (steppers were removed: typing is faster and keeps
+  the flow keyboard-only), rate/discount entries (committed on Enter /
+  focus-out, with revert-on-invalid and in-place total refresh so focus is
+  never stolen), and remove button. Selection state is a plain index in
   the tab's widget dict; merge-flash is a 500 ms `after()` callback guarded
   by `winfo_exists()` so tab switches can't crash it.
 
