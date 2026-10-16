@@ -6,6 +6,8 @@ customer ledger, invoices, reports, backup/restore, settings.
 
 import csv
 import shutil
+import tempfile
+import zipfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -17,9 +19,6 @@ import invoices
 import printing
 from db import data_dir
 
-# ---------------------------------------------------------------------------
-# Small helpers
-# ---------------------------------------------------------------------------
 RUPEE = "\u20b9"
 
 
@@ -77,6 +76,7 @@ class SearchPicker(ctk.CTkToplevel):
         self.listbox.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self.entry.focus()
         self.refresh()
+        self.bind("<Escape>", lambda e: self.destroy())
 
     def refresh(self):
         q = self.entry.get().strip()
@@ -100,9 +100,6 @@ class SearchPicker(ctk.CTkToplevel):
             self.pick(rows[0])
 
 
-# ---------------------------------------------------------------------------
-# App shell + sidebar navigation
-# ---------------------------------------------------------------------------
 NAV = [
     ("Dashboard", "dashboard"),
     ("Billing", "billing"),
@@ -128,7 +125,6 @@ class App(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # Sidebar
         self.sidebar = ctk.CTkFrame(self, width=190, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         ctk.CTkLabel(self.sidebar, text="BillBook",
@@ -147,7 +143,6 @@ class App(ctk.CTk):
             b.pack(fill="x", padx=10, pady=2)
             self.nav_buttons[key] = b
 
-        # Theme toggle lives at the bottom of the sidebar
         self.theme_var = ctk.StringVar(
             value="Dark" if db.get_setting("theme") == "dark" else "Light")
         ctk.CTkLabel(self.sidebar, text="Theme").pack(pady=(16, 0))
@@ -156,7 +151,6 @@ class App(ctk.CTk):
                                command=self.switch_theme).pack(
                                    padx=10, pady=6, fill="x")
 
-        # Main content area
         self.content = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
         self.content.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
         self.content.grid_columnconfigure(0, weight=1)
@@ -170,7 +164,6 @@ class App(ctk.CTk):
         mode = "dark" if value == "Dark" else "light"
         ctk.set_appearance_mode(mode)
         self.db.set_setting("theme", mode)
-        # Rebuild current screen so ttk tables pick up readable colors
         self.show(self.current)
 
     def show(self, key):
@@ -201,9 +194,6 @@ class App(ctk.CTk):
         self.destroy()
 
 
-# ---------------------------------------------------------------------------
-# 1. Dashboard
-# ---------------------------------------------------------------------------
 class DashboardFrame(ctk.CTkFrame):
     def __init__(self, parent, db, app):
         super().__init__(parent, fg_color="transparent")
@@ -218,7 +208,6 @@ class DashboardFrame(ctk.CTkFrame):
         week_ago = (date.today() - timedelta(days=7)).isoformat()
         top = db.top_products(week_ago, today_iso(), limit=8)
 
-        # KPI cards
         cards = ctk.CTkFrame(self, fg_color="transparent")
         cards.pack(fill="x", pady=6)
         for title, value, color in [
@@ -234,7 +223,6 @@ class DashboardFrame(ctk.CTkFrame):
                          font=ctk.CTkFont(size=18, weight="bold")).pack(
                              anchor="w", padx=12, pady=(0, 10))
 
-        # Two-column: low stock + top sellers
         cols = ctk.CTkFrame(self, fg_color="transparent")
         cols.pack(fill="both", expand=True, pady=8)
         cols.grid_columnconfigure(0, weight=1)
@@ -270,9 +258,6 @@ class DashboardFrame(ctk.CTkFrame):
                           anchor="w", pady=6)
 
 
-# ---------------------------------------------------------------------------
-# 2. Product catalog
-# ---------------------------------------------------------------------------
 UNITS = ["pcs", "kg", "g", "bag", "box", "litre", "packet", "dozen"]
 
 
@@ -393,6 +378,10 @@ class ProductsFrame(ctk.CTkFrame):
             win.destroy()
 
         ctk.CTkButton(win, text="Save", command=save).pack(pady=16)
+        for e in entries.values():
+            e.bind("<Return>", lambda _e: save())
+        win.bind("<Escape>", lambda _e: win.destroy())
+        win.after(60, lambda: entries["name"].focus_set())
         win.wait_window()
         return result or None
 
@@ -432,8 +421,6 @@ class ProductsFrame(ctk.CTkFrame):
             title="Import products from CSV")
         if not path:
             return
-        # Expected header: name,sku,purchase_price,wholesale_price,retail_price,
-        #                 unit,gst_percent,stock,low_stock_threshold,supplier
         count = 0
         with open(path, newline="", encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
@@ -477,9 +464,6 @@ class ProductsFrame(ctk.CTkFrame):
         messagebox.showinfo("Export", f"Exported to {path}")
 
 
-# ---------------------------------------------------------------------------
-# 3. Stock management
-# ---------------------------------------------------------------------------
 class StockFrame(ctk.CTkFrame):
     def __init__(self, parent, db, app):
         super().__init__(parent, fg_color="transparent")
@@ -594,9 +578,6 @@ class StockFrame(ctk.CTkFrame):
         ctk.CTkButton(win, text="Save", command=save).pack(pady=16)
 
 
-# ---------------------------------------------------------------------------
-# 4. Billing — multi-bill tabs
-# ---------------------------------------------------------------------------
 class BillTab:
     """In-memory state for one open bill tab."""
 
@@ -607,7 +588,6 @@ class BillTab:
         self.payment_type = ""       # Cash / UPI / Credit (required)
         self.price_mode = "wholesale"
         self.items = []              # dicts: product_id,name,unit,qty,price,
-                                     #         line_discount,gst_percent
         self.bill_discount = 0.0
 
     def totals(self, db):
@@ -621,7 +601,6 @@ class BillingFrame(ctk.CTkFrame):
         self.tabs = {}          # tab name -> (tabview-name, BillTab, widgets)
         self.counter = 0
 
-        # Billing-screen typography + palette (one consistent scheme)
         self.f_card_name = ctk.CTkFont(size=15, weight="bold")
         self.f_card_total = ctk.CTkFont(size=15, weight="bold")
         self.f_muted = ctk.CTkFont(size=12)
@@ -639,13 +618,21 @@ class BillingFrame(ctk.CTkFrame):
         self.tabview = ctk.CTkTabview(self)
         self.tabview.pack(fill="both", expand=True)
 
-        # Keyboard shortcuts for fast counter billing
         app.bind("<F2>", lambda e: self.new_tab())
         app.bind("<Control-s>", lambda e: self.finalize_current())
         app.bind("<Control-p>", lambda e: self.print_current())
         app.bind("<F3>", lambda e: self.focus_search())
+        app.bind("<F4>", lambda e: self.pick_customer_current())
         app.bind("<Escape>", lambda e: self.clear_line_inputs())
         self.new_tab()
+
+    def pick_customer_current(self):
+        """F4 — open the customer picker for the current tab."""
+        cur = self.current()
+        if cur:
+            pick = cur[1].get("pick_customer")
+            if pick:
+                pick()
 
     def focus_search(self):
         """F3 — jump to the product search box of the current tab."""
@@ -667,7 +654,6 @@ class BillingFrame(ctk.CTkFrame):
         w["suggest"].place_forget()
         w["prod_e"].focus_set()
 
-    # -- tabs ---------------------------------------------------------------
     def new_tab(self, edit_bill_id=None, label=None):
         self.counter += 1
         if edit_bill_id:
@@ -675,7 +661,6 @@ class BillingFrame(ctk.CTkFrame):
             tab_name = f"Edit {bill['bill_no']}"
         else:
             tab_name = label or f"Bill {self.counter}"
-        # CTkTabview needs unique names
         base, i = tab_name, 1
         while tab_name in self.tabs:
             i += 1
@@ -688,7 +673,16 @@ class BillingFrame(ctk.CTkFrame):
         self.tabs[tab_name] = (tab, widgets)
         self.tabview.set(tab_name)
         self._refresh_totals(tab_name)
+        self.after(80, lambda: self._focus_tab_search(tab_name))
         return tab_name
+
+    def _focus_tab_search(self, tab_name):
+        cur = self.tabs.get(tab_name)
+        if cur:
+            try:
+                cur[1]["prod_e"].focus_set()
+            except Exception:
+                pass
 
     def current_name(self):
         return self.tabview.get()
@@ -720,17 +714,15 @@ class BillingFrame(ctk.CTkFrame):
         if not self.tabs:
             self.new_tab()
 
-    # -- tab UI ----------------------------------------------------------------
     def _build_tab_ui(self, frame, tab):
         w = {}  # widget refs
         frame.grid_columnconfigure(0, weight=1)
 
-        # Row 1: customer + payment type + price mode + bill discount
         r1 = ctk.CTkFrame(frame, fg_color="transparent")
         r1.pack(fill="x", pady=4)
 
         ctk.CTkLabel(r1, text="Customer *").pack(side="left", padx=(4, 2))
-        cust_btn = ctk.CTkButton(r1, text="Walk-in \u2014 click to choose",
+        cust_btn = ctk.CTkButton(r1, text="Walk-in \u2014 F4 to choose",
                                  width=220, anchor="w", fg_color=("gray80", "gray20"))
         cust_btn.pack(side="left", padx=4)
 
@@ -770,8 +762,8 @@ class BillingFrame(ctk.CTkFrame):
                 lambda c: self._set_customer(tab, c, w))
 
         cust_btn.configure(command=pick_customer)
+        w["pick_customer"] = pick_customer
 
-        # Row 2: product search-as-you-type + qty + line discount + add
         r2 = ctk.CTkFrame(frame, fg_color="transparent")
         r2.pack(fill="x", pady=4)
         ctk.CTkLabel(r2, text="Product").pack(side="left", padx=(4, 2))
@@ -789,7 +781,6 @@ class BillingFrame(ctk.CTkFrame):
                                 command=lambda: self.add_line(tab, w))
         add_btn.pack(side="left", padx=8)
 
-        # Suggestion popup under the product entry
         suggest = ctk.CTkScrollableFrame(r2, width=280, height=150)
         suggest.place_forget()
 
@@ -820,7 +811,6 @@ class BillingFrame(ctk.CTkFrame):
                                           qty_e.focus_set(),
                                           qty_e.select_range(0, "end"))
                 ).pack(fill="x", pady=1)
-            # Position popup under the entry
             x = prod_e.winfo_x()
             y = prod_e.winfo_y() + prod_e.winfo_height() + 4
             suggest.place(x=x, y=y)
@@ -832,7 +822,6 @@ class BillingFrame(ctk.CTkFrame):
         ldisc_e.bind("<Return>", lambda e: self.add_line(tab, w))
         w.update({"picked": None})
 
-        # Line items — one bordered product card per item
         cards_sf = ctk.CTkScrollableFrame(frame, fg_color="transparent")
         cards_sf.pack(fill="both", expand=True, pady=6)
 
@@ -845,7 +834,6 @@ class BillingFrame(ctk.CTkFrame):
                       command=lambda: self.edit_line(tab, w)).pack(
                           side="left", padx=4)
 
-        # Totals (sticky footer — always visible while billing)
         ctk.CTkFrame(frame, height=2,
                      fg_color=("gray75", "gray25")).pack(fill="x", pady=(2, 0))
         tot = ctk.CTkFrame(frame)
@@ -860,7 +848,6 @@ class BillingFrame(ctk.CTkFrame):
                                  text_color=self.ACCENT_TEXT)
         grand_lbl.pack(side="right", padx=12, pady=8)
 
-        # Bottom actions
         r4 = ctk.CTkFrame(frame, fg_color="transparent")
         r4.pack(fill="x", pady=4)
         fin_label = ("Save changes (Ctrl+S)" if tab.edit_bill_id
@@ -877,24 +864,22 @@ class BillingFrame(ctk.CTkFrame):
                       command=lambda: self.close_tab(tab.name)).pack(
                           side="right", padx=4)
         ctk.CTkLabel(r4, text="Shortcuts: F2 new tab \u00b7 F3 search \u00b7 "
-                              "Enter add line \u00b7 +/\u2212 qty \u00b7 "
-                              "Esc clear \u00b7 Ctrl+S finalize \u00b7 Ctrl+P print",
+                              "F4 customer \u00b7 Enter add line \u00b7 Tab next field \u00b7 "
+                              "Esc clear \u00b7 Ctrl+S save \u00b7 Ctrl+P print",
                      text_color="gray").pack(side="right", padx=10)
 
         w.update({"cust_btn": cust_btn, "pay_var": pay_var,
                   "mode_var": mode_var, "disc_e": disc_e, "prod_e": prod_e,
                   "qty_e": qty_e, "ldisc_e": ldisc_e, "cards_sf": cards_sf,
-                  "card_sel": None, "card_widgets": [],
+                  "card_sel": None, "card_widgets": [], "card_fields": {},
                   "tot_lbl": tot_lbl, "warn_lbl": warn_lbl,
                   "grand_lbl": grand_lbl,
                   "suggest": suggest, "frame": frame})
         self._refresh_customer_btn(tab, w)
         return w
 
-    # -- tab behaviour ---------------------------------------------------------
     def _set_customer(self, tab, c, w):
         tab.customer = c
-        # Auto price mode from customer type
         tab.price_mode = "wholesale" if c["is_wholesale"] else "retail"
         w["mode_var"].set("Wholesale" if tab.price_mode == "wholesale"
                           else "Retail")
@@ -908,7 +893,7 @@ class BillingFrame(ctk.CTkFrame):
             w["cust_btn"].configure(
                 text=f"{c['name']}{dues}")
         else:
-            w["cust_btn"].configure(text="Walk-in \u2014 click to choose")
+            w["cust_btn"].configure(text="Walk-in \u2014 F4 to choose")
 
     def _on_pay_change(self, tab, pay_var, w):
         tab.payment_type = pay_var.get()
@@ -956,8 +941,6 @@ class BillingFrame(ctk.CTkFrame):
         if not name:
             return
         picked = w.get("picked")
-        # If the typed text exactly matches the picked product keep it,
-        # otherwise resolve by name/SKU lookup.
         p = None
         if picked and picked["name"].lower() == name.lower():
             p = self.db.get_product(picked["id"])
@@ -985,7 +968,6 @@ class BillingFrame(ctk.CTkFrame):
         price = (p["wholesale_price"] if tab.price_mode == "wholesale"
                  else p["retail_price"])
         line_disc = fnum(w["ldisc_e"])
-        # Merge: same product added twice becomes one card with summed qty
         merged_idx = None
         for i, it in enumerate(tab.items):
             if it.get("product_id") == p["id"] and it["price"] == price \
@@ -1062,20 +1044,6 @@ class BillingFrame(ctk.CTkFrame):
         w["card_sel"] = None
         self._refresh_totals(tab.name)
 
-    def bump_qty(self, tab, w, delta):
-        """+ / - : change the selected card's quantity by 1 (min 1)."""
-        idx = w.get("card_sel")
-        if idx is None or idx >= len(tab.items):
-            return
-        self.bump_qty_idx(tab, w, idx, delta)
-
-    def bump_qty_idx(self, tab, w, idx, delta):
-        it = tab.items[idx]
-        it["qty"] = max(float(it["qty"]) + delta, 1)
-        w["card_sel"] = idx
-        self._refresh_totals(tab.name)
-
-    # -- product cards ---------------------------------------------------------
     def _line_amount(self, it):
         taxable = max(it["qty"] * it["price"] - it["line_discount"], 0)
         return taxable * (1 + it["gst_percent"] / 100)
@@ -1095,6 +1063,7 @@ class BillingFrame(ctk.CTkFrame):
         for ch in sf.winfo_children():
             ch.destroy()
         cards = []
+        w["card_fields"] = {}
         if not tab.items:
             ctk.CTkLabel(
                 sf,
@@ -1123,17 +1092,17 @@ class BillingFrame(ctk.CTkFrame):
                             fg_color=self.CARD_BG,
                             border_color=self.CARD_BORDER)
 
-        # Header row: product name (prominent) + warning + remove button
         top = ctk.CTkFrame(card, fg_color="transparent")
         top.pack(fill="x", padx=12, pady=(10, 0))
         name = ctk.CTkLabel(top, text=it["name"], font=self.f_card_name,
                             anchor="w")
         name.pack(side="left")
+        warn_badge = None
         if self._low_stock(it):
-            ctk.CTkLabel(top, text="\u26a0 low stock",
-                         text_color=self.DANGER,
-                         font=ctk.CTkFont(size=12, weight="bold")).pack(
-                             side="left", padx=8)
+            warn_badge = ctk.CTkLabel(top, text="\u26a0 low stock",
+                                      text_color=self.DANGER,
+                                      font=ctk.CTkFont(size=12, weight="bold"))
+            warn_badge.pack(side="left", padx=8)
         rm = ctk.CTkButton(top, text="\u2715", width=30, height=28,
                            fg_color="transparent",
                            text_color=(self.DANGER, "#e57373"),
@@ -1141,33 +1110,28 @@ class BillingFrame(ctk.CTkFrame):
                            command=lambda: self.remove_line_idx(tab, w, idx))
         rm.pack(side="right")
 
-        # Middle row: SKU/unit (muted) + line total (bold, right)
         mid = ctk.CTkFrame(card, fg_color="transparent")
         mid.pack(fill="x", padx=12, pady=(0, 2))
         sku_txt = f"SKU: {it['sku']}" if it.get("sku") else "SKU: \u2014"
         ctk.CTkLabel(mid, text=f"{sku_txt}  \u00b7  {it['unit']}",
                      text_color="gray", font=self.f_muted).pack(side="left")
-        ctk.CTkLabel(mid, text=money(self._line_amount(it)),
-                     font=self.f_card_total).pack(side="right")
+        total_lbl = ctk.CTkLabel(mid, text=money(self._line_amount(it)),
+                                 font=self.f_card_total)
+        total_lbl.pack(side="right")
 
-        # Bottom row: qty stepper + editable rate + line discount + GST
         bot = ctk.CTkFrame(card, fg_color="transparent")
         bot.pack(fill="x", padx=12, pady=(2, 10))
 
-        step = ctk.CTkFrame(bot, fg_color="transparent")
-        step.pack(side="left")
-        ctk.CTkButton(step, text="\u2212", width=30, height=28,
-                      command=lambda: self.bump_qty_idx(tab, w, idx, -1)
-                      ).pack(side="left")
-        ctk.CTkLabel(step, text=f"{it['qty']:g} {it['unit']}", width=90,
-                     font=ctk.CTkFont(size=14, weight="bold")).pack(
-                         side="left", padx=4)
-        ctk.CTkButton(step, text="+", width=30, height=28,
-                      command=lambda: self.bump_qty_idx(tab, w, idx, +1)
-                      ).pack(side="left")
+        ctk.CTkLabel(bot, text="Qty", text_color="gray",
+                     font=self.f_muted).pack(side="left", padx=(0, 2))
+        qty_e = ctk.CTkEntry(bot, width=80)
+        qty_e.insert(0, f"{it['qty']:g}")
+        qty_e.pack(side="left")
+        ctk.CTkLabel(bot, text=it["unit"], text_color="gray",
+                     font=self.f_muted).pack(side="left", padx=4)
 
         ctk.CTkLabel(bot, text="Rate \u20b9", text_color="gray",
-                     font=self.f_muted).pack(side="left", padx=(14, 2))
+                     font=self.f_muted).pack(side="left", padx=(10, 2))
         rate_e = ctk.CTkEntry(bot, width=90)
         rate_e.insert(0, f"{it['price']:g}")
         rate_e.pack(side="left")
@@ -1181,15 +1145,24 @@ class BillingFrame(ctk.CTkFrame):
                      text_color="gray", font=self.f_muted).pack(
                          side="left", padx=10)
 
-        def commit(_e=None):
-            self._commit_card_field(tab, w, idx, rate_e, disc_e)
+        w["card_fields"][idx] = {"qty": qty_e, "rate": rate_e,
+                                 "disc": disc_e, "total": total_lbl,
+                                 "top": top, "warn": warn_badge}
+        for e in (qty_e, rate_e, disc_e):
+            e._orig_bw = e.cget("border_width")
+            e._orig_bc = e.cget("border_color")
+            e.bind("<FocusIn>", lambda ev, ee=e: ee.configure(
+                border_width=2, border_color=self.ACCENT))
+            e.bind("<FocusOut>", lambda ev, ee=e: self._card_focus_out(
+                tab, w, idx, qty_e, rate_e, disc_e, ee))
 
-        rate_e.bind("<Return>", commit)
-        disc_e.bind("<Return>", commit)
-        rate_e.bind("<FocusOut>", commit)
-        disc_e.bind("<FocusOut>", commit)
+        qty_e.bind("<Return>", lambda e: self._commit_and_focus(
+            tab, w, idx, qty_e, rate_e, disc_e, "rate"))
+        rate_e.bind("<Return>", lambda e: self._commit_and_focus(
+            tab, w, idx, qty_e, rate_e, disc_e, "disc"))
+        disc_e.bind("<Return>", lambda e: self._commit_and_focus(
+            tab, w, idx, qty_e, rate_e, disc_e, "prod"))
 
-        # Selection: click selects the card, double-click opens the editor
         def on_click(_e=None):
             self._select_card(tab, w, idx)
             try:
@@ -1204,37 +1177,109 @@ class BillingFrame(ctk.CTkFrame):
         card.bind("<Double-1>", on_dbl)
         name.bind("<Button-1>", on_click)
         name.bind("<Double-1>", on_dbl)
-        # + / - on the focused card adjust its quantity
-        card.bind("<plus>", lambda e: self.bump_qty_idx(tab, w, idx, +1))
-        card.bind("<KP_Add>", lambda e: self.bump_qty_idx(tab, w, idx, +1))
-        card.bind("<minus>", lambda e: self.bump_qty_idx(tab, w, idx, -1))
-        card.bind("<KP_Subtract>",
-                  lambda e: self.bump_qty_idx(tab, w, idx, -1))
         return card
 
-    def _commit_card_field(self, tab, w, idx, rate_e, disc_e):
-        """Apply quick-edit rate/discount from a card; revert on bad input."""
+    def _commit_card_field(self, tab, w, idx, qty_e, rate_e, disc_e):
+        """Apply quick-edit qty/rate/discount typed into a card.
+
+        Bad input reverts to the stored values. On a real change the card's
+        total + low-stock badge and the footer totals are updated IN PLACE
+        (no card rebuild), so keyboard focus is never stolen while typing
+        or tabbing between fields."""
         try:
             if idx >= len(tab.items):
                 return
             it = tab.items[idx]
-            price = float(rate_e.get().strip() or it["price"])
-            disc = float(disc_e.get().strip() or 0)
-            assert price >= 0 and disc >= 0
+            qty = float((qty_e.get() or "").strip() or it["qty"])
+            price = float((rate_e.get() or "").strip() or it["price"])
+            disc = float((disc_e.get() or "").strip() or 0)
+            assert qty > 0 and price >= 0 and disc >= 0
         except Exception:
             try:
+                if idx >= len(tab.items):
+                    return
+                it = tab.items[idx]
+                qty_e.delete(0, "end")
+                qty_e.insert(0, f"{it['qty']:g}")
                 rate_e.delete(0, "end")
-                rate_e.insert(0, f"{tab.items[idx]['price']:g}")
+                rate_e.insert(0, f"{it['price']:g}")
                 disc_e.delete(0, "end")
-                if tab.items[idx]["line_discount"]:
-                    disc_e.insert(0, f"{tab.items[idx]['line_discount']:g}")
+                if it["line_discount"]:
+                    disc_e.insert(0, f"{it['line_discount']:g}")
             except Exception:
                 pass
             return
-        if price != it["price"] or disc != it["line_discount"]:
-            it["price"], it["line_discount"] = price, disc
+        if (qty != it["qty"] or price != it["price"]
+                or disc != it["line_discount"]):
+            it["qty"], it["price"], it["line_discount"] = qty, price, disc
             w["card_sel"] = idx
-            self._refresh_totals(tab.name)
+            self._refresh_card_line(tab, w, idx)
+            self._update_totals_footer(tab, w)
+
+    def _refresh_card_line(self, tab, w, idx):
+        """Refresh one card's line total and low-stock badge in place."""
+        f = (w.get("card_fields") or {}).get(idx)
+        if not f or idx >= len(tab.items):
+            return
+        it = tab.items[idx]
+        try:
+            f["total"].configure(text=money(self._line_amount(it)))
+        except Exception:
+            pass
+        low = self._low_stock(it)
+        try:
+            if low and f.get("warn") is None:
+                f["warn"] = ctk.CTkLabel(
+                    f["top"], text="\u26a0 low stock",
+                    text_color=self.DANGER,
+                    font=ctk.CTkFont(size=12, weight="bold"))
+                f["warn"].pack(side="left", padx=8)
+            elif not low and f.get("warn") is not None:
+                f["warn"].destroy()
+                f["warn"] = None
+        except Exception:
+            pass
+
+    def _card_focus_out(self, tab, w, idx, qty_e, rate_e, disc_e, entry):
+        """FocusOut on a card field: commit, then restore its border.
+
+        Skips entirely if the entry was already destroyed (e.g. the cards
+        were re-rendered for another reason) so this can never recurse."""
+        try:
+            if not entry.winfo_exists():
+                return
+        except Exception:
+            return
+        self._commit_card_field(tab, w, idx, qty_e, rate_e, disc_e)
+        try:
+            if entry.winfo_exists():
+                entry.configure(border_width=entry._orig_bw,
+                                border_color=entry._orig_bc)
+        except Exception:
+            pass
+
+    def _commit_and_focus(self, tab, w, idx, qty_e, rate_e, disc_e, nxt):
+        """Enter on a card field: commit, then jump to the next field."""
+        self._commit_card_field(tab, w, idx, qty_e, rate_e, disc_e)
+        self._focus_card_field(tab, w, idx, nxt)
+        return "break"
+
+    def _focus_card_field(self, tab, w, idx, which):
+        """Move keyboard focus: qty / rate / disc card fields, or 'prod'
+        to jump back to the product search for the next line."""
+        if which == "prod":
+            try:
+                w["prod_e"].focus_set()
+            except Exception:
+                pass
+            return
+        e = (w.get("card_fields") or {}).get(idx, {}).get(which)
+        try:
+            if e is not None and e.winfo_exists():
+                e.focus_set()
+                e.select_range(0, "end")
+        except Exception:
+            pass
 
     def _select_card(self, tab, w, idx):
         w["card_sel"] = idx
@@ -1268,23 +1313,31 @@ class BillingFrame(ctk.CTkFrame):
             return
         tab, w = self.tabs[name]
         self._render_cards(tab, w, flash_idx)
-        t = tab.totals(self.db)
-        w["tot_lbl"].configure(
-            text=f"Subtotal  {money(t['subtotal'])}      "
-                 f"Bill disc.  {money(t['discount'])}      "
-                 f"Round-off  {money(t['round_off'])}\n"
-                 f"GST  {money(t['gst_total'])}")
-        w["grand_lbl"].configure(text=f"Total  {money(t['grand_total'])}")
-        # Inline validation warnings (no popups needed while billing)
-        problems = []
-        if not tab.customer:
-            problems.append("choose a customer")
-        if not tab.payment_type:
-            problems.append("choose payment type")
-        w["warn_lbl"].configure(
-            text=("\u26a0 " + " \u00b7 ".join(problems)) if problems else "")
+        self._update_totals_footer(tab, w)
 
-    # -- finalize / print ------------------------------------------------------
+    def _update_totals_footer(self, tab, w):
+        """Recompute the sticky totals footer only (no card rebuild)."""
+        try:
+            t = tab.totals(self.db)
+        except Exception:
+            return
+        try:
+            w["tot_lbl"].configure(
+                text=f"Subtotal  {money(t['subtotal'])}      "
+                     f"Bill disc.  {money(t['discount'])}      "
+                     f"Round-off  {money(t['round_off'])}\n"
+                     f"GST  {money(t['gst_total'])}")
+            w["grand_lbl"].configure(text=f"Total  {money(t['grand_total'])}")
+            problems = []
+            if not tab.customer:
+                problems.append("choose a customer")
+            if not tab.payment_type:
+                problems.append("choose payment type")
+            w["warn_lbl"].configure(
+                text=("\u26a0 " + " \u00b7 ".join(problems)) if problems else "")
+        except Exception:
+            pass
+
     def _validate(self, tab):
         if not tab.items:
             messagebox.showerror("Billing", "Add at least one item.")
@@ -1307,7 +1360,6 @@ class BillingFrame(ctk.CTkFrame):
         if not self._validate(tab):
             return
         if tab.edit_bill_id:
-            # Re-finalize an edited bill
             totals = self.db.update_bill(tab.edit_bill_id, tab.items,
                                          tab.bill_discount)
             bill_id = tab.edit_bill_id
@@ -1324,8 +1376,6 @@ class BillingFrame(ctk.CTkFrame):
         name = tab.name
         self.close_tab(name)
         self.offer_print_after_save(bill_id, msg)
-        # NOTE: the print-offer dialog is parented to the app root (not this
-        # frame) so the screen switch below cannot destroy it.
         self.app.show("dashboard")
 
     def offer_print_after_save(self, bill_id, msg):
@@ -1353,8 +1403,6 @@ class BillingFrame(ctk.CTkFrame):
         if printed:
             messagebox.showinfo("Print", pmsg)
         elif not preview:
-            # Not a real print (e.g. not Windows): the PDF was opened for
-            # manual printing instead.
             messagebox.showinfo("Print",
                                 f"{pmsg}\n\nPDF saved at:\n{path}")
 
@@ -1393,9 +1441,6 @@ class BillingFrame(ctk.CTkFrame):
         PrintDialog(self, self.db, bill, items)
 
 
-# ---------------------------------------------------------------------------
-# 5b. Print offer — shown right after a bill is saved
-# ---------------------------------------------------------------------------
 class PrintOfferDialog(ctk.CTkToplevel):
     """'Bill saved. Print invoice?' with Print / Preview / Skip and a
     'Remember my choice' option (stored in settings -> print_on_save)."""
@@ -1439,9 +1484,6 @@ class PrintOfferDialog(ctk.CTkToplevel):
             self.billing._do_saved_bill_print(self.bill_id, preview=True)
 
 
-# ---------------------------------------------------------------------------
-# 5. Print dialog — customization with live preview
-# ---------------------------------------------------------------------------
 ACCENTS = {"Green": "#1f6f43", "Blue": "#0b5fa5", "Maroon": "#8f1d17",
            "Orange": "#b26a00", "Purple": "#5b2d8e", "Black": "#222222"}
 
@@ -1459,7 +1501,6 @@ def render_invoice_preview(container, prof, bill, items, prefs):
 
     head = ctk.CTkFrame(container, fg_color="white")
     head.pack(fill="x", pady=4)
-    # Logo (thumbnail) when one is stored and readable
     logo_path = prefs.get("logo_path") or ""
     if logo_path:
         try:
@@ -1518,7 +1559,6 @@ def render_invoice_preview(container, prof, bill, items, prefs):
                  text_color=fg, fg_color="white",
                  font=ctk.CTkFont(size=12)).pack(anchor="w")
 
-    # Item lines
     cols = ["Item", "Qty", "Rate"]
     if prefs.get("show_discounts"):
         cols.append("Disc.")
@@ -1613,7 +1653,6 @@ class PrintDialog(ctk.CTkToplevel):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # Left: preferences
         left = ctk.CTkScrollableFrame(self, width=300)
         left.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
         ctk.CTkLabel(left, text="Print settings",
@@ -1630,9 +1669,6 @@ class PrintDialog(ctk.CTkToplevel):
                                 anchor="w", pady=4, padx=4)
             self.vars[key] = v
 
-        # Printer choice — enumerated from the OS (Windows), default
-        # pre-selected. On non-Windows the list is empty and "Preview PDF"
-        # is the way to print by hand.
         ctk.CTkLabel(left, text="Printer").pack(anchor="w", pady=(10, 2),
                                                 padx=4)
         self.printer_list = printing.list_printers()
@@ -1699,7 +1735,6 @@ class PrintDialog(ctk.CTkToplevel):
         ctk.CTkButton(left, text="Preview PDF",
                       command=self.do_preview).pack(fill="x", padx=4, pady=4)
 
-        # Right: live preview
         right = ctk.CTkFrame(self)
         right.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
         ctk.CTkLabel(right, text="Live preview",
@@ -1776,7 +1811,6 @@ class PrintDialog(ctk.CTkToplevel):
         copies = int(self._copies())
         try:
             if self.bill_id:
-                # Saved bill: full pipeline (PDF + OS print + audit log).
                 path, printed, msg = invoices.print_bill(
                     self.bill_id, printer=printer, copies=copies)
                 if printed:
@@ -1785,7 +1819,6 @@ class PrintDialog(ctk.CTkToplevel):
                 else:
                     messagebox.showinfo("Print", f"{msg}\n\nPDF: {path}")
             else:
-                # Unsaved draft: build the PDF from the live tab and print it.
                 from printing import generate_invoice_pdf, print_pdf, open_pdf
                 path = generate_invoice_pdf(self.bill, self.items,
                                             self.db.shop_profile(), p)
@@ -1800,12 +1833,6 @@ class PrintDialog(ctk.CTkToplevel):
             messagebox.showerror("Print", f"Could not print: {e}")
 
 
-# ---------------------------------------------------------------------------
-# 6. Customers — khata ledger
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# 5b. Invoice Design — customize the invoice with a live preview
-# ---------------------------------------------------------------------------
 DESIGN_SAMPLE_BILL = {
     "bill_no": "BB-0001", "date": "16-10-2026",
     "customer_name": "Sample Customer", "customer_phone": "98765 43210",
@@ -1846,7 +1873,6 @@ class InvoiceDesignFrame(ctk.CTkFrame):
         body.grid_columnconfigure(1, weight=1)
         body.grid_rowconfigure(0, weight=1)
 
-        # ---- left: controls ------------------------------------------------
         left = ctk.CTkScrollableFrame(body, width=340)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
@@ -1967,7 +1993,6 @@ class InvoiceDesignFrame(ctk.CTkFrame):
                       hover_color="#175733",
                       command=self.save).pack(fill="x", padx=4, pady=12)
 
-        # ---- right: live preview ------------------------------------------
         right = ctk.CTkFrame(body)
         right.grid(row=0, column=1, sticky="nsew")
         ctk.CTkLabel(right, text="Live preview",
@@ -1981,7 +2006,6 @@ class InvoiceDesignFrame(ctk.CTkFrame):
         self.preview.pack(fill="both", expand=True, padx=10, pady=(4, 10))
         self.refresh_preview()
 
-    # -- helpers ------------------------------------------------------------
     def _update_next_preview(self, _e=None):
         nxt = int(self.db.get_setting("bill_counter", "1") or 1)
         self.next_lbl.configure(
@@ -2121,8 +2145,6 @@ class InvoiceDesignFrame(ctk.CTkFrame):
                     "show_customer_address", "show_payment_badge",
                     "show_signature", "show_thankyou"):
             self.db.set_setting(f"invoice_{key}", "1" if p[key] else "0")
-        # show_gstin / show_item_codes / show_discounts keep their
-        # print_* keys (Print dialog + Settings write the same keys).
         self.db.set_setting("print_show_gstin",
                             "1" if p["show_gstin"] else "0")
         self.db.set_setting("print_show_item_codes",
@@ -2307,9 +2329,6 @@ class CustomersFrame(ctk.CTkFrame):
         self.refresh()
 
 
-# ---------------------------------------------------------------------------
-# 7. Invoices — past bills: reprint, edit, delete
-# ---------------------------------------------------------------------------
 class InvoicesFrame(ctk.CTkFrame):
     def __init__(self, parent, db, app):
         super().__init__(parent, fg_color="transparent")
@@ -2457,9 +2476,6 @@ class InvoicesFrame(ctk.CTkFrame):
         messagebox.showinfo("Invoices", f"Bill {b['bill_no']} deleted.")
 
 
-# ---------------------------------------------------------------------------
-# 8. Reports
-# ---------------------------------------------------------------------------
 class ReportsFrame(ctk.CTkFrame):
     def __init__(self, parent, db, app):
         super().__init__(parent, fg_color="transparent")
@@ -2562,9 +2578,6 @@ class ReportsFrame(ctk.CTkFrame):
                 t["name"], f"{t['qty']:g} {t['unit']}", money(t["total"])))
 
 
-# ---------------------------------------------------------------------------
-# 9. Backup / restore
-# ---------------------------------------------------------------------------
 class BackupFrame(ctk.CTkFrame):
     def __init__(self, parent, db, app):
         super().__init__(parent, fg_color="transparent")
@@ -2577,8 +2590,14 @@ class BackupFrame(ctk.CTkFrame):
         info.pack(fill="x", pady=8)
         p = self.db.path
         size_kb = p.stat().st_size / 1024 if p.exists() else 0
-        ctk.CTkLabel(info, text=f"Data file: {p}\nSize: {size_kb:.1f} KB",
-                     justify="left").pack(anchor="w", padx=12, pady=10)
+        dd = data_dir()
+        n_inv = len(list((dd / "invoices").glob("*.pdf"))) \
+            if (dd / "invoices").is_dir() else 0
+        ctk.CTkLabel(
+            info,
+            text=f"Data file: {p}\nSize: {size_kb:.1f} KB   |   "
+                 f"Saved invoice PDFs: {n_inv}",
+            justify="left").pack(anchor="w", padx=12, pady=10)
 
         btns = ctk.CTkFrame(self, fg_color="transparent")
         btns.pack(fill="x", pady=8)
@@ -2590,57 +2609,113 @@ class BackupFrame(ctk.CTkFrame):
         self.status = ctk.CTkLabel(btns, text="", text_color="gray")
         self.status.pack(side="left", padx=12)
 
-        ctk.CTkLabel(self, text="Tip: back up daily to a pen drive or Google "
-                                "Drive folder so a PC crash never loses your "
-                                "bills and khata.",
-                     text_color="gray", wraplength=700,
-                     justify="left").pack(anchor="w", pady=12)
+        ctk.CTkLabel(
+            self,
+            text="A backup is a single .zip with the database, all saved "
+                 "invoice PDFs and the shop logo. Back up daily to a pen "
+                 "drive or Google Drive folder so a PC crash never loses "
+                 "your bills and khata.\n\n"
+                 "Restore always saves a safety copy of your CURRENT data "
+                 "first (in billbook_data/backups), so nothing is ever "
+                 "lost by accident.",
+            text_color="gray", wraplength=700, justify="left").pack(
+                anchor="w", pady=12)
 
     def backup(self):
+        """One-click backup: db + invoice PDFs + logos into a dated zip."""
         folder = filedialog.askdirectory(title="Choose backup folder")
         if not folder:
             return
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest = Path(folder) / f"billbook_backup_{stamp}.db"
-        self.db.backup_to(dest)
+        dest = Path(folder) / f"billbook_backup_{stamp}.zip"
+        try:
+            self.db.conn.commit()
+            dd = data_dir()
+            with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+                z.write(self.db.path, "billbook.db")
+                for sub in ("invoices", "logos"):
+                    d = dd / sub
+                    if d.is_dir():
+                        for f in d.rglob("*"):
+                            if f.is_file():
+                                z.write(f, f"{sub}/{f.relative_to(d)}")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("Backup", f"Backup failed:\n{e}")
+            return
         self.status.configure(text=f"Backed up to {dest.name}")
         messagebox.showinfo("Backup", f"Backup saved:\n{dest}")
 
     def restore(self):
         path = filedialog.askopenfilename(
-            filetypes=[("SQLite DB", "*.db")], title="Choose backup file")
+            filetypes=[("BillBook backup", "*.zip"), ("SQLite DB", "*.db")],
+            title="Choose backup file")
         if not path:
             return
         if not messagebox.askyesno(
                 "Restore",
                 "Replace ALL current data with this backup?\n"
-                "Current bills, stock and khata will be overwritten."):
+                "Current bills, stock and khata will be overwritten.\n\n"
+                "A safety copy of your current data is saved first."):
             return
-        # Validate it looks like a BillBook database before overwriting
-        import sqlite3
+        dd = data_dir()
+        safe_dir = dd / "backups"
         try:
-            probe = sqlite3.connect(path)
+            safe_dir.mkdir(exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.db.conn.commit()
+            shutil.copy2(self.db.path,
+                         safe_dir / f"auto_before_restore_{stamp}.db")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("Restore",
+                                 f"Could not make a safety copy: {e}\n"
+                                 "Restore cancelled — nothing was changed.")
+            return
+        import sqlite3
+        tmp = None
+        try:
+            if path.lower().endswith(".zip"):
+                tmp = Path(tempfile.mkdtemp(prefix="billbook_restore_"))
+                with zipfile.ZipFile(path) as z:
+                    z.extractall(tmp)
+                cands = (list(tmp.rglob("billbook.db"))
+                         or list(tmp.rglob("*.db")))
+                if not cands:
+                    raise ValueError("No database found inside the zip.")
+                db_src = cands[0]
+                for sub in ("invoices", "logos"):
+                    src_d = tmp / sub
+                    if src_d.is_dir():
+                        dst_d = dd / sub
+                        dst_d.mkdir(exist_ok=True)
+                        for f in src_d.rglob("*"):
+                            if f.is_file():
+                                dst = dst_d / f.relative_to(src_d)
+                                dst.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(f, dst)
+            else:
+                db_src = Path(path)
+            probe = sqlite3.connect(str(db_src))
             tables = {r[0] for r in probe.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             probe.close()
+            if not {"products", "bills", "customers"} <= tables:
+                raise ValueError("This file is not a BillBook backup.")
+            self.db.close()
+            shutil.copy2(db_src, self.db.path)
         except Exception as e:  # noqa: BLE001
-            messagebox.showerror("Restore", f"Not a readable database: {e}")
-            return
-        if not {"products", "bills", "customers"} <= tables:
             messagebox.showerror("Restore",
-                                 "This file is not a BillBook backup.")
+                                 f"Restore failed: {e}\n\n"
+                                 "Your current data was NOT touched — a "
+                                 "safety copy is in billbook_data/backups.")
             return
-        self.db.close()
-        shutil.copy2(path, self.db.path)
+        finally:
+            if tmp is not None and tmp.exists():
+                shutil.rmtree(tmp, ignore_errors=True)
         messagebox.showinfo("Restore",
-                            "Backup restored. The app will now restart its "
-                            "database connection \u2014 please close and "
-                            "reopen BillBook.")
+                            "Backup restored. Please close and reopen "
+                            "BillBook to continue with the restored data.")
 
 
-# ---------------------------------------------------------------------------
-# 10. Settings — shop profile + print defaults
-# ---------------------------------------------------------------------------
 class SettingsFrame(ctk.CTkFrame):
     def __init__(self, parent, db, app):
         super().__init__(parent, fg_color="transparent")
@@ -2671,7 +2746,6 @@ class SettingsFrame(ctk.CTkFrame):
                      font=ctk.CTkFont(size=15, weight="bold")).pack(
                          anchor="w", pady=(12, 6))
         ctk.CTkLabel(scroll, text="Accent color").pack(anchor="w", padx=4)
-        # Preselect the currently saved accent
         cur = db.get_setting("print_accent")
         cur_name = next((n for n, c in ACCENTS.items()
                          if c.lower() == cur.lower()), "Green")
@@ -2720,5 +2794,4 @@ class SettingsFrame(ctk.CTkFrame):
         for key, v in self.toggles.items():
             self.db.set_setting(key, "1" if v.get() else "0")
         messagebox.showinfo("Settings", "Settings saved.")
-        # Refresh sidebar shop name
         self.app.show("settings")
