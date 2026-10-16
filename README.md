@@ -37,6 +37,12 @@ no Chrome extension needed.
     entry row (or closes the customer picker), **Ctrl+S** finalize,
     **Ctrl+P** print/preview. Every field is typeable — no mouse needed for
     a full bill.
+  - **Autocomplete dropdown** — typing any letter in the product search
+    opens a live dropdown under the field, ranked by relevance
+    (name-starts-with → name-contains → SKU match), showing name + SKU +
+    price. **Up/Down** moves the highlight, **Enter** picks the highlighted
+    product, **Esc** closes the dropdown, click also picks. Typing never
+    loses focus.
   - **Duplicate products merge** into one line; **low-stock warnings** (⚠)
     appear on lines that would push stock to/below the threshold; inline
     warnings (not popups) flag a missing customer or payment type in the
@@ -113,7 +119,19 @@ no Chrome extension needed.
   **Backup** screen ("Back up automatically every time the app closes" /
   "Choose folder…"). Default folder is `billbook_data/backups/`. Only the
   last **14** automatic backups are kept — older ones are deleted, manual
-  backups are never touched. The backup never blocks shutdown: if it fails
+  backups are never touched.
+- **Self-update from GitHub** — on startup the app quietly checks the
+  public `entity-coder/billbook` repo for a newer commit (background
+  thread; offline or failure = silently skipped, the app runs normally).
+  If an update exists, a small non-intrusive **"⬆ Update available"**
+  button appears in the sidebar — never forced, never interrupts billing.
+  Clicking it asks for confirmation, downloads the new source ZIP, and
+  writes an `apply_update.bat` that runs *after the app exits* (Windows
+  can't overwrite a running `.exe`): it copies the new files over the app
+  folder **excluding `billbook_data/`**, re-runs the PyInstaller build, and
+  restarts the app. If the build fails, the old `.exe` is left untouched
+  and the log is shown. `version.txt` next to the app records the running
+  commit. A manual **"Check for updates"** button lives in Settings. The backup never blocks shutdown: if it fails
   (disk full, folder unreachable) the app still closes quietly.
 - **Shop profile** — one-time setup for shop name, tagline, address, phone,
   GSTIN — printed on every bill header.
@@ -170,7 +188,10 @@ billbook_data`. After code changes, rebuild with `docker compose build`.
 | `db.py` | SQLite schema + all data access: products, customers/khata, bills, bill items, payments, stock movements, bill history, settings; billing math (`compute_totals`) |
 | `invoices.py` | Invoice generation as **PDF** (reportlab, A4 + 80mm thermal) + print orchestration: builds the PDF per bill, saves it under `billbook_data/invoices/` |
 | `printing.py` | Universal print engine: PDF rendering, printer enumeration (`win32print` on Windows), direct OS printing via `os.startfile(path, "print")`, graceful PDF-only fallback elsewhere |
-| `ui.py` | All CustomTkinter screens: dashboard, billing (multi-tab), products, stock, customers, invoices, reports, backup, settings, print dialog |
+| `ui.py` | All CustomTkinter screens: dashboard, billing (multi-tab), products, stock, customers, invoices, reports, invoice design, backup, settings, print dialog |
+| `backup.py` | Backup engine + Backup & restore screen: manual timestamped zips, restore with safety copy, silent auto-backup on exit with 14-backup retention |
+| `updater.py` | Self-update from GitHub: background latest-commit check, source-ZIP download + staging, `apply_update.bat` generator (copies new files excluding `billbook_data/`, rebuilds the `.exe` after exit, restarts) |
+| `version.txt` | Commit SHA of the running build — written at push/build time; the updater compares it with GitHub's latest |
 | `sample_products.csv` | 14 realistic Indian wholesale FMCG rows for demo import |
 | `build_exe.bat` | One-click Windows build (PyInstaller) |
 | `requirements.txt` | `customtkinter`, `reportlab` (PDF invoices) |
@@ -314,6 +335,24 @@ generated numbers — old bills keep theirs.
   folders are caught, and a bad custom folder falls back to the default.
   It's a user setting (`auto_backup_on_exit`), not hardcoded, because the
   shop owner should be able to turn it off — e.g. on a metered machine.
+- *Self-update that respects the counter.* A billing PC can't afford a
+  surprise restart mid-sale, so the update check runs in a daemon thread
+  2.5 s after startup (never blocks the UI; offline = silently skipped)
+  and the only UI is a small sidebar badge. Applying it is a two-phase
+  dance because Windows can't overwrite a running `.exe`: Python downloads
+  + stages the source ZIP and writes `apply_update.bat`, then quits; the
+  bat waits on the PID, `robocopy`s the new tree over the app folder
+  *excluding* `billbook_data/`, re-runs the exact PyInstaller command, and
+  only swaps the exe on build success — a failed build leaves the old
+  version working and opens the log. `version.txt` is the whole versioning
+  scheme: one SHA, compared against the GitHub API, no auth needed.
+- *Autocomplete that doesn't fight the keyboard.* The product search shows
+  a live dropdown ranked by relevance (name-starts-with, then contains,
+  then SKU) rather than DB order. Arrow keys move a highlight index,
+  Enter picks, Esc closes — all handled in widget-level bindings that
+  return `"break"` so they never leak into the app-level shortcuts, and
+  the dropdown never takes focus away from typing. Keeping "Enter adds
+  top match" when the dropdown is closed preserves the old fast path.
 
 **Trade-offs / what I'd do differently:** I'd add a proper migration system
 if the schema ever changes (currently `CREATE TABLE IF NOT EXISTS` only);
