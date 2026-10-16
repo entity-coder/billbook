@@ -306,14 +306,21 @@ needs one real test print on the shop's printer. And `print_pdf` never claims
 success it didn't get: on failure the app opens the PDF for manual printing.
 
 **Keyboard-first billing UX:** counters bill fast, so the billing screen is
-driven by keys — F2 new tab, F3 focus search, F4 customer picker (Esc closes
-it), Enter adds a line, Tab walks the entry row then each card's
-qty → rate → discount fields, Ctrl+S finalize, Ctrl+P print. The focused
+driven by keys — F1 shortcut help, F2 new tab, F3 focus search (opens the
+product list), F4 customer picker (Esc closes it), F6 toggle
+Wholesale/Retail prices, F8 jump to bill discount, F9 repeat last bill,
+Enter adds a line then chains each card's qty → rate → discount fields and
+re-opens the product list for the next item, Tab walks fields, Up/Down move
+in the dropdown, Delete removes the selected bill line, End opens the
+finish-bill dialog (Save is default, Enter confirms), Insert adds a new
+product, PgUp/PgDn switch bill tabs, Ctrl+S or Ctrl+Enter saves, Ctrl+P
+prints, Esc closes dropdowns/clears the entry row. End/Delete/Insert never
+hijack typing — inside a text field they behave normally. The focused
 field gets an accent border so the cashier always knows where they are, and
 committing a card field (Enter or focus-out) updates the line total in place
 without rebuilding the card — focus is never stolen mid-flow. Shortcut hints
 are printed on the buttons themselves and in a footer label. Inline warnings
-(missing customer / payment type) live in the sticky totals footer instead
+(missing customer) live in the sticky totals footer instead
 of popping dialogs mid-flow. Small touches with real counter value: adding
 the same product twice merges the line instead of duplicating it, and a ⚠
 marker appears on lines that would push stock to or below the low-stock
