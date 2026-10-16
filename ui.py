@@ -6,7 +6,6 @@ customer ledger, invoices, reports, backup/restore, settings.
 
 import csv
 import shutil
-import webbrowser
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -15,6 +14,7 @@ import customtkinter as ctk
 from tkinter import ttk
 
 import invoices
+import printing
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -628,7 +628,29 @@ class BillingFrame(ctk.CTkFrame):
         app.bind("<F2>", lambda e: self.new_tab())
         app.bind("<Control-s>", lambda e: self.finalize_current())
         app.bind("<Control-p>", lambda e: self.print_current())
+        app.bind("<F3>", lambda e: self.focus_search())
+        app.bind("<Escape>", lambda e: self.clear_line_inputs())
         self.new_tab()
+
+    def focus_search(self):
+        """F3 — jump to the product search box of the current tab."""
+        cur = self.current()
+        if cur:
+            cur[1]["prod_e"].focus_set()
+
+    def clear_line_inputs(self):
+        """Esc — clear the current product/qty/discount entry row."""
+        cur = self.current()
+        if not cur:
+            return
+        w = cur[1]
+        w["prod_e"].delete(0, "end")
+        w["qty_e"].delete(0, "end")
+        w["qty_e"].insert(0, "1")
+        w["ldisc_e"].delete(0, "end")
+        w["picked"] = None
+        w["suggest"].place_forget()
+        w["prod_e"].focus_set()
 
     # -- tabs ---------------------------------------------------------------
     def new_tab(self, edit_bill_id=None, label=None):
@@ -800,6 +822,11 @@ class BillingFrame(ctk.CTkFrame):
                       widths=(260, 80, 90, 80, 60, 110), height=13)
         fr.pack(fill="both", expand=True, pady=6)
         tv.bind("<Double-1>", lambda e: self.edit_line(tab, w))
+        # + / - adjust the selected line's quantity (step 1)
+        tv.bind("<plus>", lambda e: self.bump_qty(tab, w, +1))
+        tv.bind("<KP_Add>", lambda e: self.bump_qty(tab, w, +1))
+        tv.bind("<minus>", lambda e: self.bump_qty(tab, w, -1))
+        tv.bind("<KP_Subtract>", lambda e: self.bump_qty(tab, w, -1))
 
         r3 = ctk.CTkFrame(frame, fg_color="transparent")
         r3.pack(fill="x", pady=2)
@@ -810,12 +837,15 @@ class BillingFrame(ctk.CTkFrame):
                       command=lambda: self.edit_line(tab, w)).pack(
                           side="left", padx=4)
 
-        # Totals
+        # Totals (sticky footer — always visible while billing)
         tot = ctk.CTkFrame(frame)
         tot.pack(fill="x", pady=6)
         tot_lbl = ctk.CTkLabel(tot, text="", justify="left",
                                font=ctk.CTkFont(size=14))
         tot_lbl.pack(side="left", padx=12, pady=8)
+        warn_lbl = ctk.CTkLabel(tot, text="", text_color="#b3261e",
+                                font=ctk.CTkFont(size=13, weight="bold"))
+        warn_lbl.pack(side="left", padx=8, pady=8)
         grand_lbl = ctk.CTkLabel(tot, text="", font=ctk.CTkFont(
             size=22, weight="bold"))
         grand_lbl.pack(side="right", padx=12, pady=8)
@@ -836,14 +866,16 @@ class BillingFrame(ctk.CTkFrame):
                       hover_color="#8f1d17",
                       command=lambda: self.close_tab(tab.name)).pack(
                           side="right", padx=4)
-        ctk.CTkLabel(r4, text="Shortcuts: F2 new tab \u00b7 Enter add line \u00b7 "
-                              "Ctrl+S finalize \u00b7 Ctrl+P print",
+        ctk.CTkLabel(r4, text="Shortcuts: F2 new tab \u00b7 F3 search \u00b7 "
+                              "Enter add line \u00b7 +/\u2212 qty \u00b7 "
+                              "Esc clear \u00b7 Ctrl+S finalize \u00b7 Ctrl+P print",
                      text_color="gray").pack(side="right", padx=10)
 
         w.update({"cust_btn": cust_btn, "pay_var": pay_var,
                   "mode_var": mode_var, "disc_e": disc_e, "prod_e": prod_e,
                   "qty_e": qty_e, "ldisc_e": ldisc_e, "tv": tv,
-                  "tot_lbl": tot_lbl, "grand_lbl": grand_lbl,
+                  "tot_lbl": tot_lbl, "warn_lbl": warn_lbl,
+                  "grand_lbl": grand_lbl,
                   "suggest": suggest, "frame": frame})
         self._refresh_customer_btn(tab, w)
         return w
@@ -941,11 +973,20 @@ class BillingFrame(ctk.CTkFrame):
             return
         price = (p["wholesale_price"] if tab.price_mode == "wholesale"
                  else p["retail_price"])
-        tab.items.append({
-            "product_id": p["id"], "name": p["name"], "unit": p["unit"],
-            "qty": qty, "price": price,
-            "line_discount": fnum(w["ldisc_e"]), "gst_percent": p["gst_percent"],
-            "sku": p["sku"]})
+        line_disc = fnum(w["ldisc_e"])
+        # Merge: same product added twice becomes one line with summed qty
+        for it in tab.items:
+            if it.get("product_id") == p["id"] and it["price"] == price \
+                    and it.get("gst_percent") == p["gst_percent"] \
+                    and not it.get("line_discount") and not line_disc:
+                it["qty"] += qty
+                break
+        else:
+            tab.items.append({
+                "product_id": p["id"], "name": p["name"], "unit": p["unit"],
+                "qty": qty, "price": price,
+                "line_discount": line_disc, "gst_percent": p["gst_percent"],
+                "sku": p["sku"]})
         w["prod_e"].delete(0, "end")
         w["qty_e"].delete(0, "end")
         w["qty_e"].insert(0, "1")
@@ -1001,6 +1042,18 @@ class BillingFrame(ctk.CTkFrame):
         del tab.items[idx]
         self._refresh_totals(tab.name)
 
+    def bump_qty(self, tab, w, delta):
+        """+ / - : change the selected line's quantity by 1 (min 1)."""
+        sel = w["tv"].selection()
+        if not sel:
+            return
+        idx = w["tv"].index(sel[0])
+        it = tab.items[idx]
+        it["qty"] = max(float(it["qty"]) + delta, 1)
+        self._refresh_totals(tab.name)
+        w["tv"].selection_set(w["tv"].get_children()[idx])
+        w["tv"].focus(w["tv"].get_children()[idx])
+
     def _refresh_totals(self, name):
         if name not in self.tabs:
             return
@@ -1010,8 +1063,15 @@ class BillingFrame(ctk.CTkFrame):
         for it in tab.items:
             taxable = max(it["qty"] * it["price"] - it["line_discount"], 0)
             amt = taxable * (1 + it["gst_percent"] / 100)
+            # Low-stock indicator: qty on this bill vs live stock level
+            warn = ""
+            if it.get("product_id"):
+                p = self.db.get_product(it["product_id"])
+                if p and p["stock"] - it["qty"] <= p["low_stock_threshold"]:
+                    warn = "\u26a0 "
             w["tv"].insert("", "end", values=(
-                it["name"], f"{it['qty']:g} {it['unit']}", money(it["price"]),
+                warn + it["name"], f"{it['qty']:g} {it['unit']}",
+                money(it["price"]),
                 money(it["line_discount"]) if it["line_discount"] else "\u2014",
                 f"{it['gst_percent']:g}%", money(amt)))
         t = tab.totals(self.db)
@@ -1021,11 +1081,23 @@ class BillingFrame(ctk.CTkFrame):
                  f"Bill disc. {money(t['discount'])}   \u00b7   "
                  f"Round-off {money(t['round_off'])}")
         w["grand_lbl"].configure(text=f"Total  {money(t['grand_total'])}")
+        # Inline validation warnings (no popups needed while billing)
+        problems = []
+        if not tab.customer:
+            problems.append("choose a customer")
+        if not tab.payment_type:
+            problems.append("choose payment type")
+        w["warn_lbl"].configure(
+            text=("\u26a0 " + " \u00b7 ".join(problems)) if problems else "")
 
     # -- finalize / print ------------------------------------------------------
     def _validate(self, tab):
         if not tab.items:
             messagebox.showerror("Billing", "Add at least one item.")
+            return False
+        if not tab.customer:
+            messagebox.showerror("Billing",
+                                 "Choose a customer first (required).")
             return False
         if not tab.payment_type:
             messagebox.showerror("Billing",
@@ -1045,20 +1117,52 @@ class BillingFrame(ctk.CTkFrame):
             totals = self.db.update_bill(tab.edit_bill_id, tab.items,
                                          tab.bill_discount)
             bill_id = tab.edit_bill_id
-            msg = (f"Bill updated. New total {money(totals['grand_total'])}.\n"
-                   f"Print the corrected bill?")
+            bill = self.db.get_bill(bill_id)
+            msg = (f"Bill {bill['bill_no']} updated \u2014 "
+                   f"new total {money(totals['grand_total'])}.")
         else:
             cid = tab.customer["id"] if tab.customer else None
             bill_id = self.db.create_bill(cid, tab.payment_type, tab.items,
                                           tab.bill_discount)
             bill = self.db.get_bill(bill_id)
             msg = (f"Bill {bill['bill_no']} saved \u2014 "
-                   f"{money(bill['grand_total'])}.\nPrint now?")
+                   f"{money(bill['grand_total'])}.")
         name = tab.name
         self.close_tab(name)
-        if messagebox.askyesno("Bill saved", msg):
-            invoices.print_bill(bill_id)
+        self.offer_print_after_save(bill_id, msg)
+        # NOTE: the print-offer dialog is parented to the app root (not this
+        # frame) so the screen switch below cannot destroy it.
         self.app.show("dashboard")
+
+    def offer_print_after_save(self, bill_id, msg):
+        """'Bill saved. Print invoice?' — honors the remembered choice."""
+        mode = self.db.get_setting("print_on_save", "ask")
+        if mode == "skip":
+            return
+        if mode == "print":
+            self._do_saved_bill_print(bill_id, preview=False)
+            return
+        if mode == "preview":
+            self._do_saved_bill_print(bill_id, preview=True)
+            return
+        PrintOfferDialog(self.app, self, self.db, bill_id, msg)
+
+    def _do_saved_bill_print(self, bill_id, preview=False):
+        printer = self.db.get_setting("print_printer") or None
+        copies = int(self.db.get_setting("print_copies", "1") or 1)
+        try:
+            path, printed, pmsg = invoices.print_bill(
+                bill_id, printer=printer, copies=copies, preview=preview)
+        except Exception as e:
+            messagebox.showerror("Print", f"Could not build the invoice: {e}")
+            return
+        if printed:
+            messagebox.showinfo("Print", pmsg)
+        elif not preview:
+            # Not a real print (e.g. not Windows): the PDF was opened for
+            # manual printing instead.
+            messagebox.showinfo("Print",
+                                f"{pmsg}\n\nPDF saved at:\n{path}")
 
     def _tab_bill_preview(self, tab):
         """Build (bill_dict, items) in DB-row shape for the print preview.
@@ -1096,6 +1200,52 @@ class BillingFrame(ctk.CTkFrame):
 
 
 # ---------------------------------------------------------------------------
+# 5b. Print offer — shown right after a bill is saved
+# ---------------------------------------------------------------------------
+class PrintOfferDialog(ctk.CTkToplevel):
+    """'Bill saved. Print invoice?' with Print / Preview / Skip and a
+    'Remember my choice' option (stored in settings -> print_on_save)."""
+
+    def __init__(self, app, billing, db, bill_id, msg):
+        super().__init__(app)
+        self.db = db
+        self.bill_id = bill_id
+        self.billing = billing           # BillingFrame — has _do_saved_bill_print
+        self.title("Bill saved")
+        self.geometry("360x260")
+        self.transient(app)
+        self.grab_set()
+
+        ctk.CTkLabel(self, text=msg, wraplength=320,
+                     font=ctk.CTkFont(size=14)).pack(pady=(16, 6))
+        self.remember = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(self, text="Remember my choice",
+                        variable=self.remember).pack(pady=6)
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.pack(pady=10)
+        ctk.CTkButton(btns, text="Print", fg_color="#1f6f43",
+                      hover_color="#175733",
+                      command=lambda: self.done("print")).pack(
+                          side="left", padx=6)
+        ctk.CTkButton(btns, text="Preview",
+                      command=lambda: self.done("preview")).pack(
+                          side="left", padx=6)
+        ctk.CTkButton(btns, text="Skip", fg_color="gray",
+                      command=lambda: self.done("skip")).pack(
+                          side="left", padx=6)
+
+    def done(self, choice):
+        if self.remember.get():
+            self.db.set_setting("print_on_save", choice)
+        self.destroy()
+        if choice == "print":
+            self.billing._do_saved_bill_print(self.bill_id, preview=False)
+        elif choice == "preview":
+            self.billing._do_saved_bill_print(self.bill_id, preview=True)
+
+
+# ---------------------------------------------------------------------------
 # 5. Print dialog — customization with live preview
 # ---------------------------------------------------------------------------
 ACCENTS = {"Green": "#1f6f43", "Blue": "#0b5fa5", "Maroon": "#8f1d17",
@@ -1103,14 +1253,16 @@ ACCENTS = {"Green": "#1f6f43", "Blue": "#0b5fa5", "Maroon": "#8f1d17",
 
 
 class PrintDialog(ctk.CTkToplevel):
-    """Choose what the bill shows, tweak notes/colors/paper, live preview,
-    then open the final HTML in the browser (Ctrl+P to print)."""
+    """Choose what the bill shows, pick the printer, tweak notes/colors/paper,
+    live preview, then print the PDF directly (no browser, no extension) or
+    preview it."""
 
     def __init__(self, master, db, bill, items):
         super().__init__(master)
         self.db = db
         self.bill = bill
         self.items = items
+        self.bill_id = bill.get("id") if isinstance(bill, dict) else None
         prefs = db.print_prefs()
         self.title(f"Print {bill['bill_no']}")
         self.geometry("980x700")
@@ -1136,6 +1288,34 @@ class PrintDialog(ctk.CTkToplevel):
                             command=self.render_preview).pack(
                                 anchor="w", pady=4, padx=4)
             self.vars[key] = v
+
+        # Printer choice — enumerated from the OS (Windows), default
+        # pre-selected. On non-Windows the list is empty and "Preview PDF"
+        # is the way to print by hand.
+        ctk.CTkLabel(left, text="Printer").pack(anchor="w", pady=(10, 2),
+                                                padx=4)
+        self.printer_list = printing.list_printers()
+        self.printer_default = printing.get_default_printer()
+        saved = db.get_setting("print_printer") or ""
+        values = ["(OS default)"] + self.printer_list
+        if saved and saved in self.printer_list:
+            sel = saved
+        elif self.printer_default and self.printer_default in self.printer_list:
+            sel = self.printer_default
+        else:
+            sel = "(OS default)"
+        self.printer_var = ctk.StringVar(value=sel)
+        if self.printer_list:
+            ctk.CTkOptionMenu(left, values=values,
+                              variable=self.printer_var).pack(fill="x", padx=4)
+        else:
+            ctk.CTkLabel(left, text="No printers found \u2014 use Preview PDF",
+                         text_color="gray").pack(anchor="w", padx=4)
+
+        ctk.CTkLabel(left, text="Copies").pack(anchor="w", pady=(8, 2), padx=4)
+        self.copies_e = ctk.CTkEntry(left, width=80)
+        self.copies_e.insert(0, db.get_setting("print_copies", "1") or "1")
+        self.copies_e.pack(anchor="w", padx=4)
 
         ctk.CTkLabel(left, text="Accent color").pack(anchor="w", pady=(10, 2),
                                                     padx=4)
@@ -1172,9 +1352,11 @@ class PrintDialog(ctk.CTkToplevel):
         ctk.CTkButton(left, text="Save as defaults",
                       command=self.save_defaults).pack(fill="x", padx=4,
                                                        pady=(14, 4))
-        ctk.CTkButton(left, text="Open in browser \u2014 Ctrl+P to print",
+        ctk.CTkButton(left, text="Print invoice (Ctrl+P)",
                       fg_color="#1f6f43", hover_color="#175733",
                       command=self.do_print).pack(fill="x", padx=4, pady=4)
+        ctk.CTkButton(left, text="Preview PDF",
+                      command=self.do_preview).pack(fill="x", padx=4, pady=4)
 
         # Right: live preview
         right = ctk.CTkFrame(self)
@@ -1184,6 +1366,7 @@ class PrintDialog(ctk.CTkToplevel):
                          anchor="w", padx=10, pady=(8, 2))
         self.preview = ctk.CTkScrollableFrame(right, fg_color="white")
         self.preview.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.bind("<Control-p>", lambda e: self.do_print())
         self.render_preview()
 
     def current_prefs(self):
@@ -1299,14 +1482,63 @@ class PrintDialog(ctk.CTkToplevel):
             self.db.set_setting(f"print_{k}", "1" if p[k] else "0")
         self.db.set_setting("print_header_note", p["header_note"])
         self.db.set_setting("print_footer_note", p["footer_note"])
+        self.db.set_setting("print_printer", self._printer_choice() or "")
+        self.db.set_setting("print_copies", self._copies())
         messagebox.showinfo("Print", "Print defaults saved.")
 
-    def do_print(self):
+    def _printer_choice(self):
+        v = self.printer_var.get()
+        return None if v == "(OS default)" else v
+
+    def _copies(self):
+        try:
+            return str(max(int(self.copies_e.get() or 1), 1))
+        except ValueError:
+            return "1"
+
+    def do_preview(self):
+        """Open the PDF invoice in the default viewer (print by hand)."""
         p = self.current_prefs()
-        path = invoices.write_invoice_file(self.bill, self.items,
-                                           self.db.shop_profile(), p)
-        webbrowser.open(path.as_uri())
-        self.destroy()
+        try:
+            path = invoices.write_invoice_pdf(
+                self.bill, self.items, self.db.shop_profile(), p)
+            if self.bill_id:
+                self.db.log_bill_action(
+                    self.bill_id, "reprinted",
+                    f"Invoice preview opened: {path.name}")
+            printing.open_pdf(path)
+        except Exception as e:
+            messagebox.showerror("Print", f"Could not build the invoice: {e}")
+
+    def do_print(self):
+        """Generate the PDF invoice and send it straight to the printer."""
+        p = self.current_prefs()
+        printer = self._printer_choice()
+        copies = int(self._copies())
+        try:
+            if self.bill_id:
+                # Saved bill: full pipeline (PDF + OS print + audit log).
+                path, printed, msg = invoices.print_bill(
+                    self.bill_id, printer=printer, copies=copies)
+                if printed:
+                    messagebox.showinfo("Print", msg)
+                    self.destroy()
+                else:
+                    messagebox.showinfo("Print", f"{msg}\n\nPDF: {path}")
+            else:
+                # Unsaved draft: build the PDF from the live tab and print it.
+                from printing import generate_invoice_pdf, print_pdf, open_pdf
+                path = generate_invoice_pdf(self.bill, self.items,
+                                            self.db.shop_profile(), p)
+                ok, msg = print_pdf(path, printer=printer, copies=copies)
+                if ok:
+                    messagebox.showinfo("Print", msg)
+                    self.destroy()
+                else:
+                    open_pdf(path)
+                    messagebox.showinfo("Print", f"{msg}\n\nPDF: {path}")
+        except Exception as e:
+            messagebox.showerror("Print", f"Could not print: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1553,8 +1785,12 @@ class InvoicesFrame(ctk.CTkFrame):
         bid = self.selected_id()
         if bid is None:
             return
-        invoices.print_bill(bid)
-        messagebox.showinfo("Reprint", "Invoice opened in your browser.")
+        bill = self.db.get_bill(bid)
+        items = self.db.bill_items(bid)
+        for it in items:
+            p = self.db.get_product(it["product_id"]) if it.get("product_id") else None
+            it["sku"] = (p or {}).get("sku", "")
+        PrintDialog(self, self.db, bill, items)
 
     def view_detail(self):
         bid = self.selected_id()
