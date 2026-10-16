@@ -429,20 +429,15 @@ def _usable_width(narrow):
     return (80 * mm - 4 * mm) if narrow else (210 * mm - 24 * mm)
 
 
-def generate_invoice_pdf(bill, items, profile, prefs, dest_path=None):
-    """Render the invoice as a PDF (A4 or 80mm thermal per prefs).
-    Returns the Path of the written file."""
+def _render_pdf(bill, items, profile, prefs, dest_path):
+    """Build a Platypus PDF from a bill-like dict. Shared by invoices,
+    credit notes and receipts."""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.platypus import SimpleDocTemplate
 
     narrow = prefs.get("paper") == "thermal"
-    if dest_path is None:
-        safe = str(bill["bill_no"]).replace("/", "-")
-        dest_path = invoices_dir() / f"{safe}_invoice.pdf"
-    else:
-        dest_path = Path(dest_path)
-
+    dest_path = Path(dest_path)
     if narrow:
         width = 80 * mm
         # Thermal rolls print as one long receipt; over-estimate generously
@@ -461,6 +456,128 @@ def generate_invoice_pdf(bill, items, profile, prefs, dest_path=None):
                             author=profile.get("shop_name") or "BillBook",
                             **margins)
     doc.build(_story(bill, items, profile, prefs, narrow))
+    return dest_path
+
+
+def generate_invoice_pdf(bill, items, profile, prefs, dest_path=None):
+    """Render the invoice as a PDF (A4 or 80mm thermal per prefs).
+    Returns the Path of the written file."""
+    if dest_path is None:
+        safe = str(bill["bill_no"]).replace("/", "-")
+        dest_path = invoices_dir() / f"{safe}_invoice.pdf"
+    return _render_pdf(bill, items, profile, prefs, dest_path)
+
+
+def generate_credit_note_pdf(cn, items, profile, prefs, dest_path=None):
+    """Printable credit note for a sales return. Reuses the invoice layout
+    with a CREDIT NOTE title; honors invoice-design settings."""
+    bill = {
+        "bill_no": cn["credit_note_no"],
+        "date": cn["date"],
+        "payment_type": f"Credit Note (against bill {cn.get('bill_no') or ''})",
+        "subtotal": cn["subtotal"],
+        "discount": 0,
+        "gst_total": cn["gst_total"],
+        "round_off": round(cn["total"] - cn["subtotal"] - cn["gst_total"], 2),
+        "grand_total": cn["total"],
+        "customer_name": cn.get("customer_name") or "Walk-in",
+        "customer_phone": cn.get("customer_phone") or "",
+        "customer_address": cn.get("customer_address") or "",
+    }
+    prefs2 = dict(prefs)
+    prefs2["invoice_title"] = "CREDIT NOTE"
+    if dest_path is None:
+        safe = str(cn["credit_note_no"]).replace("/", "-")
+        dest_path = invoices_dir() / f"{safe}_credit_note.pdf"
+    return _render_pdf(bill, items, profile, prefs2, dest_path)
+
+
+def generate_payment_receipt_pdf(payment, customer, profile, prefs,
+                                 dest_path=None):
+    """Small payment receipt PDF for a khata collection (A4 + thermal)."""
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (HRFlowable, Paragraph, SimpleDocTemplate,
+                                    Spacer, Table, TableStyle)
+
+    narrow = prefs.get("paper") == "thermal"
+    accent = colors.HexColor(prefs.get("accent", "#1f6f43") or "#1f6f43")
+    dark, grey = colors.HexColor("#222222"), colors.HexColor("#777777")
+    fs = 9 if narrow else 11
+
+    def P(text, size=fs, bold=False, color=dark, align=TA_LEFT):
+        return Paragraph(text, ParagraphStyle(
+            "r", fontName=_FONT_BOLD if bold else _FONT_NAME,
+            fontSize=size, leading=size * 1.35, textColor=color,
+            alignment=align, spaceAfter=3))
+
+    story = [
+        P(profile.get("shop_name") or "BillBook Shop", size=fs + 6, bold=True,
+          color=accent, align=TA_CENTER),
+    ]
+    if profile.get("shop_phone"):
+        story.append(P(f"Phone: {profile['shop_phone']}", color=grey,
+                       align=TA_CENTER))
+    story += [
+        HRFlowable(width="100%", thickness=2, color=accent,
+                   spaceAfter=6, spaceBefore=4),
+        P("PAYMENT RECEIPT", size=fs + 3, bold=True, color=accent,
+          align=TA_CENTER),
+        Spacer(1, 6),
+    ]
+    rows = [
+        ["Receipt No:", f"RCP-{int(payment['id']):04d}"],
+        ["Date:", payment["date"]],
+        ["Received from:", customer["name"] if customer else "-"],
+        ["Mode:", payment.get("mode") or "Cash"],
+    ]
+    if payment.get("note"):
+        rows.append(["Note:", payment["note"]])
+    t = Table([[P(f"<b>{k}</b>", size=fs), P(v, size=fs)] for k, v in rows],
+              colWidths=["38%", "62%"] if not narrow else ["40%", "60%"])
+    t.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 8))
+    story.append(P(f"Amount received: <b>{money(payment['amount'])}</b>",
+                   size=fs + 4, bold=True, color=accent, align=TA_CENTER))
+    story.append(Spacer(1, 6))
+    if customer:
+        story.append(P(
+            f"Outstanding balance after this payment: "
+            f"<b>{money(customer['balance'])}</b>", align=TA_CENTER))
+    story.append(Spacer(1, 10))
+    story.append(P("Thank you!", bold=True, color=accent, align=TA_CENTER))
+    if not narrow:
+        story.append(Spacer(1, 24))
+        story.append(Table(
+            [[P("Customer signature", color=grey),
+              P(f"For {profile.get('shop_name') or 'Shop'}", color=grey,
+                align=TA_CENTER)]],
+            colWidths=["50%", "50%"]))
+
+    if dest_path is None:
+        dest_path = (invoices_dir()
+                     / f"RCP-{int(payment['id']):04d}_receipt.pdf")
+    dest_path = Path(dest_path)
+    if narrow:
+        pagesize = (80 * mm, 120 * mm)
+        margins = dict(leftMargin=2 * mm, rightMargin=2 * mm,
+                       topMargin=3 * mm, bottomMargin=3 * mm)
+    else:
+        pagesize = A4
+        margins = dict(leftMargin=12 * mm, rightMargin=12 * mm,
+                       topMargin=12 * mm, bottomMargin=12 * mm)
+    doc = SimpleDocTemplate(str(dest_path), pagesize=pagesize,
+                            title=f"Receipt RCP-{int(payment['id']):04d}",
+                            author=profile.get("shop_name") or "BillBook",
+                            **margins)
+    doc.build(story)
     return dest_path
 
 

@@ -129,6 +129,68 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS suppliers (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name    TEXT NOT NULL,
+    phone   TEXT DEFAULT '',
+    address TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS purchases (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id INTEGER,
+    date        TEXT NOT NULL,              -- YYYY-MM-DD
+    ref_no      TEXT DEFAULT '',            -- supplier invoice / ref number
+    subtotal    REAL NOT NULL DEFAULT 0,    -- pre-GST
+    gst_total   REAL NOT NULL DEFAULT 0,
+    grand_total REAL NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+);
+
+CREATE TABLE IF NOT EXISTS purchase_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    purchase_id INTEGER NOT NULL,
+    product_id  INTEGER,
+    name        TEXT NOT NULL,
+    qty         REAL NOT NULL,
+    unit        TEXT NOT NULL DEFAULT 'pcs',
+    cost        REAL NOT NULL,              -- purchase cost per unit
+    gst_percent REAL NOT NULL DEFAULT 0,
+    line_total  REAL NOT NULL,              -- (qty*cost) + GST
+    FOREIGN KEY (purchase_id) REFERENCES purchases(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS returns (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    bill_id        INTEGER NOT NULL,
+    credit_note_no TEXT NOT NULL UNIQUE,
+    date           TEXT NOT NULL,
+    customer_id    INTEGER,
+    subtotal       REAL NOT NULL DEFAULT 0,
+    gst_total      REAL NOT NULL DEFAULT 0,
+    total          REAL NOT NULL DEFAULT 0,  -- credit amount incl. GST
+    note           TEXT DEFAULT '',
+    created_at     TEXT NOT NULL,
+    FOREIGN KEY (bill_id) REFERENCES bills(id)
+);
+
+CREATE TABLE IF NOT EXISTS return_items (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    return_id     INTEGER NOT NULL,
+    bill_item_id  INTEGER NOT NULL,
+    product_id    INTEGER,
+    name          TEXT NOT NULL,
+    sku           TEXT DEFAULT '',
+    qty           REAL NOT NULL,
+    unit          TEXT NOT NULL DEFAULT 'pcs',
+    price         REAL NOT NULL,             -- unit price originally charged
+    line_discount REAL NOT NULL DEFAULT 0,
+    gst_percent   REAL NOT NULL DEFAULT 0,
+    line_total    REAL NOT NULL,
+    FOREIGN KEY (return_id) REFERENCES returns(id) ON DELETE CASCADE
+);
 """
 
 DEFAULT_SETTINGS = {
@@ -171,6 +233,8 @@ DEFAULT_SETTINGS = {
     "auto_backup_folder": "",     # "" = default billbook_data/backups/
     # Bill numbering
     "bill_counter": "1",
+    # Credit-note numbering (sales returns)
+    "credit_note_counter": "1",
     # Theme
     "theme": "dark",
 }
@@ -186,11 +250,24 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         for k, v in DEFAULT_SETTINGS.items():
             self.conn.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v)
             )
         self.conn.commit()
+
+    def _migrate(self):
+        """Additive schema upgrades for databases created by older builds."""
+        try:
+            cols = [r["name"] for r in
+                    self.conn.execute("PRAGMA table_info(payments)").fetchall()]
+            if "mode" not in cols:
+                self.conn.execute(
+                    "ALTER TABLE payments ADD COLUMN mode TEXT DEFAULT 'Cash'")
+            self.conn.commit()
+        except Exception:
+            pass
 
     # -- generic helpers ----------------------------------------------------
     def _rows(self, sql, params=()):
@@ -383,15 +460,25 @@ class DB:
         self.conn.commit()
         return True
 
-    def record_payment(self, customer_id, amount, note=""):
+    def record_payment(self, customer_id, amount, note="", mode="Cash",
+                       pay_date=None):
         """Payment RECEIVED from customer — reduces their khata balance."""
         self.conn.execute(
-            "INSERT INTO payments (customer_id, amount, date, note) "
-            "VALUES (?, ?, ?, ?)",
-            (customer_id, amount, date.today().isoformat(), note))
+            "INSERT INTO payments (customer_id, amount, date, mode, note) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (customer_id, amount, pay_date or date.today().isoformat(),
+             mode or "Cash", note))
         self.conn.execute("UPDATE customers SET balance = balance - ? "
                           "WHERE id=?", (amount, customer_id))
         self.conn.commit()
+        return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    def customer_outstanding(self, customer_id):
+        """Outstanding dues = the running khata balance, which is kept
+        consistent by construction: credit bills add to it, payments and
+        credit notes subtract from it."""
+        c = self.get_customer(customer_id)
+        return float(c["balance"]) if c else 0.0
 
     def dues_list(self):
         return self._rows("SELECT * FROM customers WHERE balance > 0.004 "
@@ -596,6 +683,207 @@ class DB:
             (bill_id, action, details,
              datetime.now().strftime("%Y-%m-%d %H:%M")))
         self.conn.commit()
+
+    # -- suppliers / purchases (stock in) -----------------------------------
+    def list_suppliers(self, search=""):
+        if search:
+            like = f"%{search}%"
+            return self._rows(
+                "SELECT * FROM suppliers WHERE name LIKE ? OR phone LIKE ? "
+                "ORDER BY name", (like, like))
+        return self._rows("SELECT * FROM suppliers ORDER BY name")
+
+    def get_supplier(self, sid):
+        return self._one("SELECT * FROM suppliers WHERE id=?", (sid,))
+
+    def add_supplier(self, name, phone="", address=""):
+        cur = self.conn.execute(
+            "INSERT INTO suppliers (name, phone, address) VALUES (?, ?, ?)",
+            (name, phone, address))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def find_by_sku(self, sku):
+        """Exact barcode/SKU match (case-insensitive). Used by the billing
+        scanner fast-path: a USB scanner types the barcode + Enter."""
+        s = (sku or "").strip()
+        if not s:
+            return None
+        return self._one("SELECT * FROM products WHERE LOWER(sku)=LOWER(?)",
+                         (s,))
+
+    def create_purchase(self, supplier_id, date_str, ref_no, items):
+        """Record a stock purchase: stock increases, purchase price becomes
+        the weighted average of old stock and the new lot, movement logged."""
+        for it in items:
+            q = float(it["qty"])
+            c = float(it["cost"])
+            if q <= 0:
+                raise ValueError(f"Quantity must be > 0 for '{it['name']}'.")
+            if c < 0:
+                raise ValueError(f"Cost cannot be negative for '{it['name']}'.")
+        subtotal = sum(float(it["qty"]) * float(it["cost"]) for it in items)
+        gst_total = sum(float(it["qty"]) * float(it["cost"])
+                        * float(it.get("gst_percent", 0)) / 100.0
+                        for it in items)
+        grand = round(subtotal + gst_total, 2)
+        cur = self.conn.execute(
+            "INSERT INTO purchases (supplier_id, date, ref_no, subtotal, "
+            "gst_total, grand_total, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (supplier_id, date_str, ref_no or "", round(subtotal, 2),
+             round(gst_total, 2), grand,
+             datetime.now().strftime("%Y-%m-%d %H:%M")))
+        pid = cur.lastrowid
+        for it in items:
+            q, c = float(it["qty"]), float(it["cost"])
+            gst = float(it.get("gst_percent", 0))
+            line_total = round(q * c * (1 + gst / 100.0), 2)
+            self.conn.execute(
+                "INSERT INTO purchase_items (purchase_id, product_id, name, "
+                "qty, unit, cost, gst_percent, line_total) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (pid, it.get("product_id"), it["name"], q,
+                 it.get("unit", "pcs"), c, gst, line_total))
+            if it.get("product_id"):
+                p = self.get_product(it["product_id"])
+                old_stock = float(p["stock"])
+                old_cost = float(p["purchase_price"] or 0)
+                new_stock = old_stock + q
+                avg = ((old_stock * old_cost + q * c) / new_stock
+                       if new_stock > 0 else c)
+                self.conn.execute(
+                    "UPDATE products SET purchase_price=?, gst_percent=? "
+                    "WHERE id=?", (round(avg, 2), gst, it["product_id"]))
+                self.adjust_stock(it["product_id"], q, "purchase",
+                                  f"Purchase #{pid} {ref_no or ''}".strip())
+        self.conn.commit()
+        return pid
+
+    def list_purchases(self, limit=200):
+        return self._rows(
+            "SELECT p.*, s.name AS supplier_name FROM purchases p "
+            "LEFT JOIN suppliers s ON s.id=p.supplier_id "
+            "ORDER BY p.id DESC LIMIT ?", (limit,))
+
+    def get_purchase(self, pid):
+        return self._one(
+            "SELECT p.*, s.name AS supplier_name, s.phone AS supplier_phone "
+            "FROM purchases p LEFT JOIN suppliers s ON s.id=p.supplier_id "
+            "WHERE p.id=?", (pid,))
+
+    def purchase_items(self, pid):
+        return self._rows("SELECT * FROM purchase_items WHERE purchase_id=? "
+                          "ORDER BY id", (pid,))
+
+    def delete_purchase(self, pid):
+        """Delete a purchase record and reverse its stock. The weighted
+        purchase price is left as-is (reversing it exactly would need full
+        lot history); stock is what matters for billing."""
+        pur = self.get_purchase(pid)
+        if not pur:
+            return False
+        for it in self.purchase_items(pid):
+            if it["product_id"]:
+                self.adjust_stock(it["product_id"], -float(it["qty"]),
+                                  "purchase-reversal",
+                                  f"Reversal of deleted purchase #{pid}")
+        self.conn.execute("DELETE FROM purchases WHERE id=?", (pid,))
+        self.conn.commit()
+        return True
+
+    # -- sales returns / credit notes ---------------------------------------
+    def next_credit_note_no(self):
+        n = int(self.get_setting("credit_note_counter", "1"))
+        self.set_setting("credit_note_counter", str(n + 1))
+        return f"CN-{n:04d}"
+
+    def returned_qty(self, bill_item_id):
+        r = self._one("SELECT COALESCE(SUM(qty), 0) q FROM return_items "
+                      "WHERE bill_item_id=?", (bill_item_id,))
+        return float(r["q"])
+
+    def create_return(self, bill_id, items, note=""):
+        """Record a sales return. items: list of dicts with bill_item_id and
+        qty. Stock goes back up; a credit note is issued; for credit bills
+        the customer's khata balance is reduced."""
+        bill = self.get_bill(bill_id)
+        if not bill:
+            raise ValueError("Bill not found.")
+        lines = []
+        for it in items:
+            bi = self._one("SELECT * FROM bill_items WHERE id=?",
+                           (it["bill_item_id"],))
+            if not bi or bi["bill_id"] != bill_id:
+                raise ValueError("Return item does not belong to this bill.")
+            q = float(it["qty"])
+            if q <= 0:
+                raise ValueError(f"Return qty must be > 0 for '{bi['name']}'.")
+            max_q = float(bi["qty"]) - self.returned_qty(bi["id"])
+            if q - max_q > 0.0001:
+                raise ValueError(
+                    f"Only {max_q:g} of '{bi['name']}' can still be returned.")
+            taxable = max(q * float(bi["price"])
+                          - float(bi["line_discount"] or 0), 0.0)
+            gst = taxable * float(bi["gst_percent"] or 0) / 100.0
+            lines.append((bi, q, taxable, gst))
+        if not lines:
+            raise ValueError("Nothing to return.")
+        subtotal = round(sum(t for _, _, t, _ in lines), 2)
+        gst_total = round(sum(g for _, _, _, g in lines), 2)
+        total = round(subtotal + gst_total, 2)
+        cn_no = self.next_credit_note_no()
+        cur = self.conn.execute(
+            "INSERT INTO returns (bill_id, credit_note_no, date, customer_id,"
+            " subtotal, gst_total, total, note, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (bill_id, cn_no, date.today().isoformat(), bill["customer_id"],
+             subtotal, gst_total, total, note or "",
+             datetime.now().strftime("%Y-%m-%d %H:%M")))
+        rid = cur.lastrowid
+        for bi, q, taxable, gst in lines:
+            line_total = round(taxable + gst, 2)
+            p = (self.get_product(bi["product_id"])
+                 if bi["product_id"] else None)
+            self.conn.execute(
+                "INSERT INTO return_items (return_id, bill_item_id, "
+                "product_id, name, sku, qty, unit, price, line_discount, "
+                "gst_percent, line_total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "?, ?)",
+                (rid, bi["id"], bi["product_id"], bi["name"],
+                 (p or {}).get("sku", ""), q, bi["unit"], bi["price"],
+                 bi["line_discount"], bi["gst_percent"], line_total))
+            if bi["product_id"]:
+                self.adjust_stock(bi["product_id"], q, "return",
+                                  f"Credit note {cn_no} (bill {bill['bill_no']})")
+        if bill["payment_type"] == "Credit" and bill["customer_id"]:
+            self.conn.execute("UPDATE customers SET balance = balance - ? "
+                              "WHERE id=?", (total, bill["customer_id"]))
+        self.log_bill_action(
+            bill_id, "returned",
+            f"Credit note {cn_no}: {total:.2f} credited "
+            f"({len(lines)} line(s))")
+        self.conn.commit()
+        return rid
+
+    def list_returns(self, limit=200):
+        return self._rows(
+            "SELECT r.*, b.bill_no, c.name AS customer_name FROM returns r "
+            "LEFT JOIN bills b ON b.id=r.bill_id "
+            "LEFT JOIN customers c ON c.id=r.customer_id "
+            "ORDER BY r.id DESC LIMIT ?", (limit,))
+
+    def get_return(self, rid):
+        return self._one(
+            "SELECT r.*, b.bill_no, b.date AS bill_date, "
+            "c.name AS customer_name, c.phone AS customer_phone, "
+            "c.address AS customer_address FROM returns r "
+            "LEFT JOIN bills b ON b.id=r.bill_id "
+            "LEFT JOIN customers c ON c.id=r.customer_id "
+            "WHERE r.id=?", (rid,))
+
+    def return_items(self, rid):
+        return self._rows("SELECT * FROM return_items WHERE return_id=? "
+                          "ORDER BY id", (rid,))
 
     # -- dashboard / reports ------------------------------------------------
     def sales_on(self, day):
