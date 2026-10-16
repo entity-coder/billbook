@@ -15,6 +15,7 @@ Tables:
 
 import sqlite3
 import sys
+import os
 from datetime import date, datetime
 from pathlib import Path
 
@@ -144,11 +145,27 @@ DEFAULT_SETTINGS = {
     "print_show_item_codes": "1",
     "print_show_discounts": "1",
     "print_header_note": "",
-    "print_footer_note": "Thank you for your business!",
+    "print_footer_note": "",   # terms & conditions / notes (below totals)
     # Print flow
     "print_on_save": "ask",        # ask / print / preview / skip
     "print_printer": "",           # "" = OS default printer
     "print_copies": "1",
+    # Invoice design (customizable invoice)
+    "invoice_title": "TAX INVOICE",
+    "invoice_font_size": "standard",  # compact / standard / large
+    "invoice_show_tagline": "1",
+    "invoice_show_address": "1",
+    "invoice_show_phone": "1",
+    "invoice_show_gst_table": "1",
+    "invoice_show_hsn": "0",          # HSN column (uses SKU as the value)
+    "invoice_show_roundoff": "1",
+    "invoice_show_customer_address": "1",
+    "invoice_show_payment_badge": "1",
+    "invoice_show_signature": "1",
+    "invoice_show_thankyou": "1",
+    "invoice_thankyou_text": "Thank you for your business!",
+    "invoice_logo_path": "",
+    "invoice_number_prefix": "BB-",
     # Bill numbering
     "bill_counter": "1",
     # Theme
@@ -199,15 +216,47 @@ class DB:
                  "shop_phone", "shop_gstin")}
 
     def print_prefs(self):
+        """All invoice/print preferences. Missing keys fall back to the
+        defaults in DEFAULT_SETTINGS so old databases keep working."""
+        def flag(key, default="1"):
+            return self.get_setting(key, default) == "1"
+
         return {
-            "accent": self.get_setting("print_accent"),
-            "paper": self.get_setting("print_paper"),
-            "show_gstin": self.get_setting("print_show_gstin") == "1",
-            "show_item_codes": self.get_setting("print_show_item_codes") == "1",
-            "show_discounts": self.get_setting("print_show_discounts") == "1",
+            "accent": self.get_setting("print_accent") or "#1f6f43",
+            "paper": self.get_setting("print_paper") or "A4",
+            "show_gstin": flag("print_show_gstin"),
+            "show_item_codes": flag("print_show_item_codes"),
+            "show_discounts": flag("print_show_discounts"),
             "header_note": self.get_setting("print_header_note"),
             "footer_note": self.get_setting("print_footer_note"),
+            # Invoice design
+            "invoice_title": (self.get_setting("invoice_title", "TAX INVOICE")
+                              or "TAX INVOICE"),
+            "font_size": (self.get_setting("invoice_font_size", "standard")
+                          or "standard"),
+            "show_tagline": flag("invoice_show_tagline"),
+            "show_address": flag("invoice_show_address"),
+            "show_phone": flag("invoice_show_phone"),
+            "show_gst_table": flag("invoice_show_gst_table"),
+            "show_hsn": flag("invoice_show_hsn", "0"),
+            "show_roundoff": flag("invoice_show_roundoff"),
+            "show_customer_address": flag("invoice_show_customer_address"),
+            "show_payment_badge": flag("invoice_show_payment_badge"),
+            "show_signature": flag("invoice_show_signature"),
+            "show_thankyou": flag("invoice_show_thankyou"),
+            "thankyou_text": (self.get_setting(
+                "invoice_thankyou_text", "Thank you for your business!")),
+            "logo_path": self.get_setting("invoice_logo_path"),
+            "number_prefix": (self.get_setting("invoice_number_prefix", "BB-")
+                              or "BB-"),
         }
+
+    def invoice_logo_file(self):
+        """Absolute path of the stored invoice logo, or None."""
+        p = self.get_setting("invoice_logo_path") or ""
+        if p and os.path.isfile(p):
+            return p
+        return None
 
     # -- products -----------------------------------------------------------
     def list_products(self, search=""):
@@ -362,7 +411,8 @@ class DB:
     def next_bill_no(self):
         n = int(self.get_setting("bill_counter", "1"))
         self.set_setting("bill_counter", str(n + 1))
-        return f"BB-{n:04d}"
+        prefix = self.get_setting("invoice_number_prefix", "BB-") or "BB-"
+        return f"{prefix}{n:04d}"
 
     @staticmethod
     def compute_totals(items, bill_discount=0.0):

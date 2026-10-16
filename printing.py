@@ -207,9 +207,12 @@ def _story(bill, items, profile, prefs, narrow):
     dark = colors.HexColor("#222222")
     grey = colors.HexColor("#777777")
 
-    fs = 8 if narrow else 10        # base font size
-    fs_title = 13 if narrow else 20
-    fs_h = 10 if narrow else 12
+    # Font-size preset (Compact / Standard / Large)
+    fscale = {"compact": 0.85, "standard": 1.0,
+              "large": 1.18}.get(prefs.get("font_size", "standard"), 1.0)
+    fs = round((8 if narrow else 10) * fscale)        # base font size
+    fs_title = round((13 if narrow else 20) * fscale)
+    fs_h = round((10 if narrow else 12) * fscale)
 
     def P(text, size=fs, bold=False, color=dark, align=TA_LEFT, space=2):
         return Paragraph(
@@ -218,39 +221,76 @@ def _story(bill, items, profile, prefs, narrow):
                 fontSize=size, leading=size * 1.3, textColor=color,
                 alignment=align, spaceAfter=space))
 
+    def _logo_image():
+        """Shop logo scaled to fit the header, or None (missing/unreadable)."""
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Image as RLImage
+        p = prefs.get("logo_path") or ""
+        if not p or not os.path.isfile(p):
+            return None
+        try:
+            img = RLImage(p)
+            max_h = 16 * mm if narrow else 26 * mm
+            iw, ih = float(img.imageWidth), float(img.imageHeight)
+            if ih <= 0:
+                return None
+            img.drawHeight = max_h
+            img.drawWidth = iw * max_h / ih
+            return img
+        except Exception:
+            return None
+
     story = []
     # -- shop header -----------------------------------------------------
-    story.append(P(profile.get("shop_name") or "BillBook Shop",
-                   size=fs_title, bold=True, color=accent_c,
-                   align=TA_CENTER, space=1))
-    if profile.get("shop_tagline"):
-        story.append(P(profile["shop_tagline"], align=TA_CENTER, space=1))
-    if profile.get("shop_address"):
-        story.append(P(profile["shop_address"], color=grey, align=TA_CENTER,
-                        space=1))
-    if profile.get("shop_phone"):
-        story.append(P(f"Phone: {profile['shop_phone']}", color=grey,
-                       align=TA_CENTER, space=1))
+    head_lines = [P(profile.get("shop_name") or "BillBook Shop",
+                    size=fs_title, bold=True, color=accent_c,
+                    align=TA_CENTER, space=1)]
+    if prefs.get("show_tagline", True) and profile.get("shop_tagline"):
+        head_lines.append(P(profile["shop_tagline"], align=TA_CENTER,
+                            space=1))
+    if prefs.get("show_address", True) and profile.get("shop_address"):
+        head_lines.append(P(profile["shop_address"], color=grey,
+                            align=TA_CENTER, space=1))
+    if prefs.get("show_phone", True) and profile.get("shop_phone"):
+        head_lines.append(P(f"Phone: {profile['shop_phone']}", color=grey,
+                            align=TA_CENTER, space=1))
     if prefs.get("show_gstin") and profile.get("shop_gstin"):
-        story.append(P(f"GSTIN: {profile['shop_gstin']}", color=grey,
-                       align=TA_CENTER, space=1))
+        head_lines.append(P(f"GSTIN: {profile['shop_gstin']}", color=grey,
+                            align=TA_CENTER, space=1))
     if prefs.get("header_note"):
-        story.append(P(prefs["header_note"], align=TA_CENTER, space=1))
+        head_lines.append(P(prefs["header_note"], align=TA_CENTER, space=1))
+    logo = _logo_image()
+    if logo is not None:
+        # Logo left, shop block right (top-aligned, centered text).
+        story.append(Table([[logo, head_lines]],
+                           colWidths=[logo.drawWidth,
+                                      _usable_width(narrow) - logo.drawWidth]))
+    else:
+        story.extend(head_lines)
     story.append(HRFlowable(width="100%", thickness=2.5, color=accent_c,
                             spaceAfter=6, spaceBefore=4))
 
+    # -- invoice title ----------------------------------------------------
+    title = prefs.get("invoice_title", "TAX INVOICE") or "TAX INVOICE"
+    story.append(P(title, size=fs_h + 2, bold=True, color=accent_c,
+                   align=TA_CENTER, space=6))
+
     # -- bill meta --------------------------------------------------------
     cust = bill.get("customer_name") or "Walk-in"
+    show_cust_addr = prefs.get("show_customer_address", True)
+    pay_line = f"<b>Payment:</b> {bill.get('payment_type', '')}"
+    if prefs.get("show_payment_badge", True) \
+            and bill.get("payment_type") == "Credit":
+        pay_line += "  <b><font color='#b3261e'>CREDIT — due</font></b>"
+    addr_line = (f"<b>Address:</b> {bill.get('customer_address') or '-'}"
+                 if show_cust_addr else "")
     meta = [
         [P(f"<b>Bill No:</b> {bill['bill_no']}", size=fs_h),
          P(f"<b>Customer:</b> {cust}", size=fs_h)],
         [P(f"<b>Date:</b> {bill['date']}", size=fs_h),
          P(f"<b>Phone:</b> {bill.get('customer_phone') or '-'}", size=fs_h)],
-        [P(f"<b>Payment:</b> {bill.get('payment_type', '')}"
-           + ("  <b><font color='#b3261e'>CREDIT — due</font></b>"
-              if bill.get("payment_type") == "Credit" else ""), size=fs_h),
-         P(f"<b>Address:</b> {bill.get('customer_address') or '-'}",
-           size=fs_h)],
+        [P(pay_line, size=fs_h),
+         P(addr_line, size=fs_h) if addr_line else Spacer(1, 1)],
     ]
     story.append(Table(meta, colWidths=["50%", "50%"]))
     story.append(Spacer(1, 8))
@@ -258,20 +298,36 @@ def _story(bill, items, profile, prefs, narrow):
     # -- items ------------------------------------------------------------
     show_disc = prefs.get("show_discounts", True)
     show_codes = prefs.get("show_item_codes", True)
-    header = ["#", "Item", "Qty", "Rate"]
-    if show_disc:
-        header.append("Disc.")
-    header += ["GST%", "Amount"]
-    data = [header]
+    # HSN column: SKU doubles as the HSN value; too narrow for 80mm thermal.
+    show_hsn = bool(prefs.get("show_hsn")) and not narrow
+
+    # Column specs in order: (header, width in points, flexible?)
+    if narrow:  # 80mm thermal: tight columns; Item takes the remainder.
+        colspec = [("#", 12), ("Item", None), ("Qty", 24), ("Rate", 36)]
+        if show_disc:
+            colspec.append(("Disc.", 30))
+        colspec += [("GST%", 26), ("Amount", 44)]
+    else:
+        colspec = [("#", 22), ("Item", None)]
+        if show_hsn:
+            colspec.append(("HSN", 52))
+        colspec += [("Qty", 52), ("Rate", 62)]
+        if show_disc:
+            colspec.append(("Disc.", 62))
+        colspec += [("GST%", 44), ("Amount", 78)]
+
+    data = [[h for h, _ in colspec]]
     for i, it in enumerate(items, 1):
         name = it["name"]
         if show_codes and it.get("sku"):
             name = f"{name}<br/><font color='#777777' size={fs - 1}>{it['sku']}</font>"
         disc = money(it.get("line_discount", 0)) if it.get("line_discount") else "-"
         row = [str(i), Paragraph(name, ParagraphStyle(
-            "n", fontName=_FONT_NAME, fontSize=fs, leading=fs * 1.3)),
-               f"{float(it['qty']):g} {it.get('unit', '')}",
-               money(it["price"])]
+            "n", fontName=_FONT_NAME, fontSize=fs, leading=fs * 1.3))]
+        if show_hsn:
+            row.append(it.get("sku") or "-")
+        row += [f"{float(it['qty']):g} {it.get('unit', '')}",
+                money(it["price"])]
         if show_disc:
             row.append(disc)
         taxable = max(float(it["qty"]) * float(it["price"])
@@ -280,19 +336,10 @@ def _story(bill, items, profile, prefs, narrow):
                 money(taxable * (1 + float(it.get("gst_percent", 0) or 0) / 100))]
         data.append(row)
 
-    if narrow:
-        # 80mm thermal: tight columns in points; Item takes the remainder.
-        widths = [12, None, 24, 36, 30, 26, 44]
-        if not show_disc:
-            widths.pop(4)
-    else:
-        widths = [22, None, 52, 62, 62, 44, 78]
-        if not show_disc:
-            widths.pop(4)
     # Resolve the flexible Item column
     total_w = _usable_width(narrow)
-    fixed = sum(w for w in widths if w is not None)
-    widths = [total_w - fixed if w is None else w for w in widths]
+    fixed = sum(w for _, w in colspec if w is not None)
+    widths = [total_w - fixed if w is None else w for _, w in colspec]
 
     t = Table(data, colWidths=widths, repeatRows=1)
     style = [("BACKGROUND", (0, 0), (-1, 0), accent_c),
@@ -300,40 +347,45 @@ def _story(bill, items, profile, prefs, narrow):
              ("FONTNAME", (0, 0), (-1, 0), _FONT_BOLD),
              ("FONTSIZE", (0, 0), (-1, -1), fs),
              ("FONTNAME", (0, 1), (-1, -1), _FONT_NAME),
-             ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+             ("ALIGN", (3 if show_hsn else 2, 0), (-1, -1), "RIGHT"),
              ("VALIGN", (0, 0), (-1, -1), "TOP"),
              ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
              ("ROWBACKGROUNDS", (0, 1), (-1, -1),
               [colors.white, colors.HexColor("#f7f7f7")])]
+    if show_hsn:
+        style.append(("ALIGN", (2, 1), (2, -1), "CENTER"))
     t.setStyle(TableStyle(style))
     story.append(t)
     story.append(Spacer(1, 8))
 
     # -- GST breakup -------------------------------------------------------
-    slabs = _slabs(items)
-    gdata = [["Slab", "Taxable", "CGST", "SGST", "GST"]]
-    for slab in sorted(slabs):
-        taxable, gst = slabs[slab]
-        gdata.append([f"{slab:g}%", money(taxable), money(gst / 2),
-                      money(gst / 2), money(gst)])
-    gt = Table(gdata, colWidths=[total_w * w for w in
-                                 (0.16, 0.24, 0.2, 0.2, 0.2)])
-    gt.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
-        ("FONTNAME", (0, 0), (-1, 0), _FONT_BOLD),
-        ("FONTSIZE", (0, 0), (-1, -1), fs - 1 if narrow else fs),
-        ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
-    ]))
-    story.append(gt)
-    story.append(Spacer(1, 8))
+    if prefs.get("show_gst_table", True):
+        slabs = _slabs(items)
+        gdata = [["Slab", "Taxable", "CGST", "SGST", "GST"]]
+        for slab in sorted(slabs):
+            taxable, gst = slabs[slab]
+            gdata.append([f"{slab:g}%", money(taxable), money(gst / 2),
+                          money(gst / 2), money(gst)])
+        gt = Table(gdata, colWidths=[total_w * w for w in
+                                     (0.16, 0.24, 0.2, 0.2, 0.2)])
+        gt.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
+            ("FONTNAME", (0, 0), (-1, 0), _FONT_BOLD),
+            ("FONTNAME", (0, 1), (-1, -1), _FONT_NAME),
+            ("FONTSIZE", (0, 0), (-1, -1), fs - 1 if narrow else fs),
+            ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+        ]))
+        story.append(gt)
+        story.append(Spacer(1, 8))
 
     # -- totals ------------------------------------------------------------
     tdata = [["Subtotal", money(bill["subtotal"])],
              ["Total GST", money(bill["gst_total"])]]
     if float(bill.get("discount", 0) or 0):
         tdata.append(["Discount", f"- {money(bill['discount'])}"])
-    tdata.append(["Round off", money(bill.get("round_off", 0) or 0)])
+    if prefs.get("show_roundoff", True):
+        tdata.append(["Round off", money(bill.get("round_off", 0) or 0)])
     tdata.append(["Grand Total", money(bill["grand_total"])])
     tw = total_w * (0.75 if narrow else 0.46)
     tt = Table(tdata, colWidths=[tw * 0.55, tw * 0.45])
@@ -354,11 +406,18 @@ def _story(bill, items, profile, prefs, narrow):
     if prefs.get("footer_note"):
         story.append(P(prefs["footer_note"], align=TA_CENTER,
                        color=grey, space=6))
-    story.append(Table(
-        [[P("Customer signature", color=grey),
-          P(f"For {profile.get('shop_name') or 'Shop'}", color=grey,
-            align=TA_RIGHT)]],
-        colWidths=["50%", "50%"]))
+    if prefs.get("show_thankyou", True):
+        thankyou = (prefs.get("thankyou_text")
+                    or "Thank you for your business!")
+        story.append(P(thankyou, align=TA_CENTER, bold=True,
+                       color=accent_c, space=6))
+    # Signature lines: skipped on 80mm thermal (no room).
+    if prefs.get("show_signature", True) and not narrow:
+        story.append(Table(
+            [[P("Customer signature", color=grey),
+              P(f"For {profile.get('shop_name') or 'Shop'}", color=grey,
+                align=TA_RIGHT)]],
+            colWidths=["50%", "50%"]))
     now = datetime.now().strftime("%d-%m-%Y %I:%M %p")
     story.append(P(f"Generated by BillBook — {now}", size=fs - 1,
                    color=grey, align=TA_CENTER, space=2))

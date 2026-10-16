@@ -71,6 +71,27 @@ no Chrome extension needed.
 - **Print customization** — show/hide GSTIN, item codes, discount column;
   header/footer notes; accent color; **A4 or thermal 80mm** paper; **live
   preview** before printing.
+- **Invoice Design** (new sidebar screen) — make the invoice fully yours,
+  with an instant live preview (renders the real PDF when PyMuPDF is
+  available, otherwise a close approximation):
+  - **Header**: toggle tagline / address / phone / GSTIN individually, and
+    upload a shop **logo** (PNG/JPG — shown on the invoice header; stored
+    safely in `billbook_data/logos/`).
+  - **Title & text**: editable invoice title ("TAX INVOICE" / "BILL" /
+    "RECEIPT"…), Compact / Standard / Large text size, accent color.
+  - **Columns & tables**: GST slab breakup table, HSN column (uses the
+    product SKU as the HSN value; A4 only — too narrow for thermal),
+    discount column, item codes.
+  - **Bill details**: round-off line, customer address, CREDIT — due badge,
+    signature lines (A4 only).
+  - **Footer**: multi-line **terms & conditions**, thank-you message
+    (toggle + editable text).
+  - **Paper & numbering**: default A4 / thermal 80mm, default copies,
+    editable invoice number **prefix** (e.g. `BB-`, `INV/`) — the next bill
+    number previews live as you type.
+  - Every choice saves to the database and applies to **every invoice from
+    then on** — new prints, reprints, and previews. Missing settings fall
+    back to the original defaults, so old databases keep working.
 - **Reports** — day-wise / monthly sales totals, GST summary by slab, profit
   estimate (sale price − purchase price per line), top products.
 - **Backup/restore** — one-click backup of the database file; restore from a
@@ -216,6 +237,25 @@ button, and the low-stock ⚠ badge when relevant. Clicking a card selects it
 (accent border); double-click opens the full line editor; adding a duplicate
 merges into the existing card and flashes it so the cashier sees where it
 went. An empty bill shows a clean "Bill is empty" placeholder.
+
+**Invoice design system:** every visual/textual part of the invoice is a
+database setting, edited in the **Invoice Design** sidebar screen with a
+live preview. The preview renders the *actual* PDF via PyMuPDF when it's
+installed (zero new hard dependency — it falls back to a widget
+approximation, the same renderer the Print dialog uses). Toggles cover
+tagline/address/phone/GSTIN, GST slab table, HSN column (SKU doubles as
+the HSN value — Indian retail shops commonly print SKU in that column),
+round-off line, customer address, the CREDIT — due badge, and signature
+lines; text fields cover the invoice title, multi-line terms & conditions,
+and the thank-you message; Compact/Standard/Large scale the PDF font
+sizes; the logo is uploaded once, copied into `billbook_data/logos/`, and
+drawn in the PDF header with graceful fallback if the file goes missing.
+The 80mm thermal layout hides what can't fit (HSN column, signature
+lines) rather than breaking the layout. Backward compatibility is by
+construction: `print_prefs()` fills missing keys with the old defaults, so
+an existing `billbook.db` from the shop PC keeps working, and the invoice
+number prefix (`invoice_number_prefix`, default `BB-`) only affects newly
+generated numbers — old bills keep theirs.
 
 **Key design decisions in the code:**
 - *Billing math lives in one place* (`DB.compute_totals`): line discounts
