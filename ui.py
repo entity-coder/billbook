@@ -1664,7 +1664,6 @@ class ReportsFrame(ctk.CTkFrame):
                       command=lambda: set_range(30)).pack(side="left", padx=2)
         ctk.CTkButton(top, text="Refresh", command=self.refresh).pack(
             side="left", padx=8)
-        set_range(30)
 
         self.cards = ctk.CTkFrame(self, fg_color="transparent")
         self.cards.pack(fill="x", pady=6)
@@ -1688,7 +1687,7 @@ class ReportsFrame(ctk.CTkFrame):
                                 ("Product", "Qty sold", "Amount"),
                                 widths=(260, 100, 140), height=12)
         fr3.pack(fill="both", expand=True, padx=8, pady=8)
-        self.refresh()
+        set_range(30)  # fills the date boxes and renders everything
 
     def refresh(self):
         start = self.from_e.get().strip() or "2000-01-01"
