@@ -86,6 +86,12 @@ no Chrome extension needed.
     Disc / GST entries on row 2), so more lines fit on screen. All
     behaviors are unchanged: inline editing with focus commit, click to
     select, double-click to edit, × remove button, flash on add.
+  - **Marg-style sale chrome** — a compact bill header row (Customer picker
+    · Payment Cash/UPI/Credit · Price Wholesale/Retail · Bill disc · **Bill
+    No.** next-number preview · **Date**), and a **Last Bills** strip under
+    the totals showing the 5 most recent bills as
+    `customer:billno:₹amount` chips — click one to view/preview/reprint it
+    (same dialog as Reprint on the Invoices screen).
 - **Product catalog** — name, SKU/barcode, purchase / wholesale / retail
   price, unit (pcs, kg, bag, box, litre…), **pack size** (pieces per pack,
   e.g. 12 for a dozen-box; shown as the PACKING column in the billing
@@ -145,8 +151,20 @@ no Chrome extension needed.
     auto-print every bill.
   - Print and Preview buttons also live on the billing screen; the Invoices
     screen reprints any past bill with the same flow.
-  - On non-Windows (or if printing fails), the app honestly opens the PDF
-    for manual printing instead of claiming the job printed.
+  - **Silent printing** — on Windows the bill prints with **no PDF window
+    opening at all**: each page is rasterized at 203 dpi (thermal-printer
+    resolution) and drawn straight to the printer, so nothing pops up on
+    screen. Needs `pymupdf` + `pillow` + `pywin32` (all installed by
+    `build_exe.bat`). If silent printing is unavailable, the app falls back
+    to the classic Windows print verb (which may visibly open the PDF app —
+    it does print), and only if that fails too does it report the failure.
+  - The app **never opens the PDF on its own** when printing: on failure it
+    shows the reason, the saved PDF path, and a fix hint
+    ("check the default printer in Windows Settings > Printers"), with a
+    manual **Open PDF** button if you want to print it by hand. Preview
+    buttons still open the PDF — that's intentional.
+  - On non-Windows the app honestly reports it can't print directly and
+    points at the saved PDF instead of claiming the job printed.
 - **Print customization** — show/hide GSTIN, item codes, discount column;
   header/footer notes; accent color; **A4 or thermal 80mm** paper; **live
   preview** before printing.
@@ -292,8 +310,10 @@ Data is stored in `billbook_data/billbook.db` next to the source (or next to
 1. On the **Windows** shop PC, install Python 3.10+ from python.org (tick
    **"Add python.exe to PATH"** during setup).
 2. Copy this project folder to the shop PC and double-click **`build_exe.bat`**.
-   It installs `customtkinter` + `pyinstaller` and compiles the app —
-   takes a few minutes.
+   It installs `customtkinter` + `pyinstaller` + `reportlab` + `pywin32` +
+   `pymupdf` + `pillow` and compiles the app — takes a few minutes.
+   (`pymupdf`/`pillow` power the silent printing: bills print with no PDF
+   window opening.)
 3. Done: `dist\BillBook.exe` is the standalone app. Copy it to the Desktop.
    Afterwards the shop PC **never needs Python again**.
 4. Keep the `billbook_data` folder next to the `.exe` — that is your data.
@@ -641,3 +661,31 @@ field is free text. Verified by 32 headless checks: urgency sort, order-qty
 math (including negative stock and stock == threshold), threshold-0
 exclusion, Enter/Esc keyboard toggles, prefill payload, A4 + thermal PDFs,
 and the empty-state message.
+(9) *Marg-style grid billing* — new `grid_billing.py` module (the product
+grid, find box, detail footer, bill-lines table, and the Last-Bills/header/
+boxes chrome helpers all live here so `ui.py` stays under the 128 KB
+push-file limit). The grid starts **empty** — `refresh()` sets `_shown = []`
+on an empty query and filters name+SKU otherwise; pressing Enter in the
+find box focuses the treeview (first row highlighted) instead of picking,
+so arrows move and Enter picks. The bill-lines `ttk.Treeview` is the grid
+view's read-out of `tab.items`; row selection writes `w["card_sel"]` so the
+existing remove/edit/Delete/double-click flows work unchanged, and
+`set_lines` restores selection when valid. Boxes billing multiplies by the
+product's `pack_size` (already in the schema — no migration); pieces math,
+stock checks and line merging are untouched. Compact cards keep every
+behavior (inline edit, select, double-click, ×, flash) with tighter
+two-row layout.
+(10) *Silent printing* — `printing.silent_print_pdf()` rasterizes each PDF
+page with PyMuPDF at 203 dpi (thermal resolution), converts to a PIL image
+(normalizing gray/CMYK → RGB, dropping alpha), and draws it to the printer
+device context via `win32ui` — no PDF viewer window ever opens. Windows +
+pywin32 + fitz + PIL are all required; any missing piece returns
+`(False, reason)` instead of raising. `print_pdf()` tries silent first,
+then the legacy `os.startfile(path, "print")` verb as an emergency backup
+(it does print, but may visibly open the PDF app), and only on total
+failure returns `(False, reason + saved path + fix hint)` — nothing ever
+auto-opens on the print path; the Print dialog offers a manual "Open PDF"
+button instead. `build_exe.bat` installs `pymupdf` + `pillow` and passes
+`--hidden-import fitz` to PyInstaller. Verified headless: graceful
+`(False, …)` on Linux, no `open_pdf` call on any print path (monkeypatched),
+fallback order silent → legacy → fail, and preview paths still open.

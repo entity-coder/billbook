@@ -3,7 +3,7 @@ REM ============================================================
 REM  BillBook - one-click Windows build
 REM  Run this ONCE on the shop PC (Windows 10/11, Python 3.10+ installed
 REM  from python.org with "Add python.exe to PATH" ticked).
-REM  It installs the two needed packages and compiles BillBook.exe.
+REM  It installs the needed packages and compiles BillBook.exe.
 REM  After this, the shop PC never needs Python again - just run
 REM  dist\BillBook.exe.
 REM  NOTE: a Windows .exe can only be built on Windows. This script
@@ -13,7 +13,7 @@ cd /d "%~dp0"
 
 echo Installing dependencies...
 python -m pip install --upgrade pip
-python -m pip install customtkinter pyinstaller reportlab pywin32
+python -m pip install customtkinter pyinstaller reportlab pywin32 pymupdf pillow
 if errorlevel 1 (
     echo.
     echo ERROR: pip install failed. Check your internet connection and
@@ -24,7 +24,7 @@ if errorlevel 1 (
 
 echo.
 echo Building BillBook.exe (this takes a few minutes)...
-pyinstaller --noconfirm --onefile --windowed --name BillBook main.py
+pyinstaller --noconfirm --onefile --windowed --name BillBook --hidden-import fitz --hidden-import pymupdf --hidden-import PIL.ImageWin main.py
 if errorlevel 1 (
     echo.
     echo ERROR: PyInstaller build failed. See the output above.
