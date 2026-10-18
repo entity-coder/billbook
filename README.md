@@ -70,7 +70,20 @@ no Chrome extension needed.
     filter, **Down** in the find box jumps into the grid, and **F3** focuses
     the find box. The grid shows the same low-stock ⚠ warnings billing
     already uses and follows the tab's Wholesale/Retail price mode.
+    Under the grid, a **Bill lines** table (ITEM | QTY | UNIT | RATE | DISC
+    | AMOUNT) shows everything added to the bill — click a row to select it
+    for the existing Remove / Edit / Delete flows, double-click to edit.
     **Cards** is the original card-based line view, unchanged.
+  - **Billing by boxes** — wholesale FMCG bills by boxes, so in Grid view
+    the line-entry row has a **Boxes** field: enter boxes and the line qty
+    becomes boxes × the product's **pack size** (pieces math, stock checks
+    and line merging work exactly as with typed qty; **Enter** in the Boxes
+    field adds the line). Boxes is grid-view only.
+  - **Compact line cards** — bill line-item cards are two rows (name +
+    low-stock badge + line total + remove on row 1; Qty / unit / Rate /
+    Disc / GST entries on row 2), so more lines fit on screen. All
+    behaviors are unchanged: inline editing with focus commit, click to
+    select, double-click to edit, × remove button, flash on add.
 - **Product catalog** — name, SKU/barcode, purchase / wholesale / retail
   price, unit (pcs, kg, bag, box, litre…), **pack size** (pieces per pack,
   e.g. 12 for a dozen-box; shown as the PACKING column in the billing
@@ -316,7 +329,7 @@ billbook_data`. After code changes, rebuild with `docker compose build`.
 | `purchases_ui.py` | Purchases screen: supplier picker, purchase entry, purchase history |
 | `returns_ui.py` | Sales-return dialog (credit notes) + WhatsApp bill sharing |
 | `shop_ui.py` | Marg-parity screens: Cash Book (day book), delivery challans (+ challan dialog), Suppliers ledger, Outstanding aging report, Re-Order list |
-| `grid_billing.py` | Marg-style sale-entry grid for billing: DESCRIPTION/PACKING/STOCK/UNIT/RATE treeview, "Find Name ? >>" live filter, item-detail footer (PurRate/MRP/Margin%/Company); data-only panel that hands picks back to the billing flow (split out of `ui.py` to keep modules small) |
+| `grid_billing.py` | Marg-style sale-entry grid for billing: DESCRIPTION/PACKING/STOCK/UNIT/RATE treeview, "Find Name ? >>" live filter, item-detail footer (PurRate/MRP/Margin%/Company), bill-lines table (ITEM/QTY/UNIT/RATE/DISC/AMOUNT) with selection syncing, Boxes→pieces helper, view toggle wiring; data-only panel that hands picks back to the billing flow (split out of `ui.py` to keep modules small) |
 | `backup.py` | Backup engine + Backup & restore screen: manual timestamped zips, restore with safety copy, silent auto-backup on exit with 14-backup retention |
 | `updater.py` | Self-update from GitHub: background latest-commit check, source-ZIP download + staging, `apply_update.bat` generator (copies new files excluding `billbook_data/`, rebuilds the `.exe` after exit, restarts) |
 | `version.txt` | Commit SHA of the running build — written at push/build time; the updater compares it with GitHub's latest |
@@ -415,13 +428,13 @@ marker appears on lines that would push stock to or below the low-stock
 threshold.
 
 **Product cards:** each bill line is its own bordered card, not a table row —
-product name prominent, SKU/unit muted, a plain typed quantity field (no
-+/− steppers), editable rate and line-discount fields right on the card,
-bold line total, × remove button, and the low-stock ⚠ badge when relevant.
-Clicking a card selects it (accent border); double-click opens the full line
-editor; adding a duplicate merges into the existing card and flashes it so
-the cashier sees where it went. An empty bill shows a clean "Bill is empty"
-placeholder.
+kept compact (two rows: name + low-stock badge + line total + × remove on
+row 1; Qty / unit / Rate / Disc / GST entries on row 2) so more lines fit on
+screen. A plain typed quantity field (no +/− steppers), editable rate and
+line-discount fields right on the card, bold line total. Clicking a card
+selects it (accent border); double-click opens the full line editor; adding
+a duplicate merges into the existing card and flashes it so the cashier sees
+where it went. An empty bill shows a clean "Bill is empty" placeholder.
 
 **Grid / Cards product picker:** the shop's previous software (Marg ERP)
 shows products in a grid — DESCRIPTION | PACKING | STOCK | UNIT | RATE —
@@ -439,7 +452,17 @@ PurRate/MRP/Margin%/Company from columns that already existed. View choice
 is a per-tab state with a frame-level toggle + Ctrl+G, persisted in
 settings. The trade-off: two picker UIs to maintain instead of one — kept
 because the user explicitly asked for the Marg-style grid, and the cards
-view stays for anyone who prefers it.
+view stays for anyone who prefers it. Follow-up fixes after real counter
+use: (1) the grid hid the bill lines entirely, so a **Bill lines**
+treeview (ITEM | QTY | UNIT | RATE | DISC | AMOUNT) was added under the
+grid — row selection syncs `card_sel`, so the existing Remove / Edit /
+Delete / double-click-edit flows work unchanged in grid view; (2) a
+**Boxes** entry in grid view computes qty = boxes × pack_size for
+wholesale box billing (pieces math, stock checks and merging unchanged);
+(3) Escape in the grid find box no longer wipes the line-entry row — the
+app-level Escape handler returns early when focus is inside the find entry
+(CTkEntry wraps a real tk Entry child, so the check compares widget *paths*,
+not widget identity), letting the grid's own handler clear just the filter.
 editor; adding a duplicate merges into the existing card and flashes it so
 the cashier sees where it went. An empty bill shows a clean "Bill is empty"
 placeholder.

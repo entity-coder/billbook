@@ -39,10 +39,13 @@ class GridPanel(ctk.CTkFrame):
 
     COLS = ("DESCRIPTION", "PACKING", "STOCK", "UNIT", "RATE")
 
-    def __init__(self, master, db, on_add, price_mode="wholesale"):
+    def __init__(self, master, db, on_add, price_mode="wholesale",
+                 on_line_select=None, on_line_edit=None):
         super().__init__(master, fg_color="transparent")
         self.db = db
         self.on_add = on_add
+        self.on_line_select = on_line_select
+        self.on_line_edit = on_line_edit
         self.price_mode = price_mode
         self._products = []   # full product list (dicts)
         self._shown = []      # products currently in the grid
@@ -82,6 +85,61 @@ class GridPanel(ctk.CTkFrame):
             font=ctk.CTkFont(size=12))
         self.detail.pack(fill="x", pady=(2, 0))
         self._blank_detail()
+
+        ctk.CTkLabel(self, text="Bill lines", text_color="gray",
+                     font=ctk.CTkFont(size=12, weight="bold")).pack(
+                         anchor="w", pady=(6, 0))
+        lframe = ctk.CTkFrame(self)
+        lframe.pack(fill="x", pady=(0, 2))
+        self.LCOLS = ("ITEM", "QTY", "UNIT", "RATE", "DISC", "AMOUNT")
+        self.lines_tv = ttk.Treeview(lframe, columns=self.LCOLS,
+                                     show="headings", height=6)
+        for c, wd, a in (("ITEM", 220, "w"), ("QTY", 70, "e"),
+                         ("UNIT", 60, "center"), ("RATE", 90, "e"),
+                         ("DISC", 80, "e"), ("AMOUNT", 100, "e")):
+            self.lines_tv.heading(c, text=c)
+            self.lines_tv.column(c, width=wd, anchor=a)
+        lvsb = ttk.Scrollbar(lframe, orient="vertical",
+                             command=self.lines_tv.yview)
+        self.lines_tv.configure(yscrollcommand=lvsb.set)
+        self.lines_tv.pack(side="left", fill="x", expand=True)
+        lvsb.pack(side="right", fill="y")
+        self.lines_tv.bind("<<TreeviewSelect>>", self._on_line_select)
+        self.lines_tv.bind("<Double-1>", self._on_line_dbl)
+
+    def set_lines(self, items, sel=None):
+        """Rebuild the bill-lines table; reselect sel when valid."""
+        tv = self.lines_tv
+        for r in tv.get_children():
+            tv.delete(r)
+        for idx, it in enumerate(items):
+            amt = (float(it.get("qty") or 0) * float(it.get("price") or 0)
+                   - float(it.get("line_discount") or 0))
+            tv.insert("", "end", iid=str(idx), values=(
+                it.get("name") or "", f"{float(it.get('qty') or 0):g}",
+                it.get("unit") or "", money(it.get("price") or 0),
+                money(it.get("line_discount") or 0), money(amt)))
+        if sel is not None and 0 <= sel < len(items):
+            try:
+                tv.selection_set(str(sel))
+                tv.see(str(sel))
+            except Exception:
+                pass
+
+    def _on_line_select(self, _event=None):
+        if self.on_line_select is None:
+            return
+        sel = self.lines_tv.selection()
+        if sel:
+            try:
+                self.on_line_select(int(sel[0]))
+            except (ValueError, IndexError):
+                pass
+
+    def _on_line_dbl(self, _event=None):
+        if self.on_line_edit is not None:
+            self.on_line_edit()
+        return "break"
 
     def _rate_of(self, p):
         return (p["wholesale_price"] if self.price_mode == "wholesale"
@@ -166,6 +224,8 @@ class GridPanel(ctk.CTkFrame):
 
     def _pick_selected(self, _event=None):
         p = self.selected_product()
+        if p is None and self._shown:
+            p = self._shown[0]
         if p:
             self.on_add(p)
         return "break"
@@ -210,25 +270,80 @@ def install_header(billing):
 
 def build_panel(frame, billing, tab, w):
     """Create the GridPanel for a billing tab and stash it in w."""
-    panel = GridPanel(frame, billing.db,
-                      on_add=lambda p: billing._suggest_pick(tab, w, p),
-                      price_mode=tab.price_mode)
+    panel = GridPanel(
+        frame, billing.db,
+        on_add=lambda p: billing._suggest_pick(tab, w, p),
+        price_mode=tab.price_mode,
+        on_line_select=lambda i: billing._select_line(tab, w, i),
+        on_line_edit=lambda: billing.edit_line(tab, w))
     w["grid_panel"] = panel
     view = billing.db.get_setting("billing_view", "grid")
     w["bill_view"] = view if view in ("grid", "cards") else "grid"
 
 
+def boxes_qty(w, p):
+    """Pieces from the Boxes entry (grid view); None when not applicable."""
+    if (w.get("bill_view") or "grid") != "grid":
+        return None
+    be = w.get("boxes_e")
+    if be is None:
+        return None
+    try:
+        boxes = float(be.get().strip() or 0)
+    except ValueError:
+        return None
+    if boxes <= 0:
+        return None
+    return boxes * (int((p or {}).get("pack_size") or 1) or 1)
+
+
+def focus_picker(w):
+    """Focus the product picker for the current view."""
+    gp = w.get("grid_panel")
+    if (w.get("bill_view") or "grid") == "grid" and gp is not None:
+        gp.focus_find()
+    else:
+        w["prod_e"].focus_set()
+
+
+def escape_in_find(app, w):
+    """True when Escape was pressed inside the grid find box."""
+    gp = w.get("grid_panel")
+    if (w.get("bill_view") or "grid") != "grid" or gp is None:
+        return False
+    try:
+        foc = app.focus_get()
+        if foc is None:
+            return False
+        fp, ff = str(foc), str(gp.find_e)
+        # CTkEntry wraps a real tk Entry child (find_e.!entry) which
+        # is the widget that actually holds keyboard focus.
+        return foc == gp.find_e or fp == ff or fp.startswith(ff + ".")
+    except Exception:
+        return False
+
+
 def apply_view(billing, tab, w):
     gp = w.get("grid_panel")
-    if (w.get("bill_view") or "grid") == "grid":
+    is_grid = (w.get("bill_view") or "grid") == "grid"
+    bl, be = w.get("boxes_lbl"), w.get("boxes_e")
+    if is_grid:
         w["cards_sf"].pack_forget()
+        if bl is not None and be is not None:
+            bl.pack(side="left", padx=(6, 2), after=w.get("qty_e"))
+            be.pack(side="left", padx=4, after=bl)
         if gp is not None:
             gp.set_price_mode(tab.price_mode)
             gp.set_products(billing.db.list_products(""))
+            gp.set_lines(tab.items, w.get("card_sel"))
             gp.pack(fill="both", expand=True, pady=6)
     else:
         if gp is not None:
             gp.pack_forget()
+        if bl is not None:
+            bl.pack_forget()
+        if be is not None:
+            be.pack_forget()
         w["cards_sf"].pack(fill="both", expand=True, pady=6)
 
 
