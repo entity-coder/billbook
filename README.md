@@ -172,6 +172,62 @@ no Chrome extension needed.
   (disk full, folder unreachable) the app still closes quietly.
 - **Shop profile** — one-time setup for shop name, tagline, address, phone,
   GSTIN — printed on every bill header.
+- **Today at a glance** — the Dashboard top row is a Marg-style summary
+  strip, all computed live from the database: today's bill count + sales,
+  cash in hand, debtors (customer outstanding), creditors (supplier
+  outstanding), and stock value. Cash in hand = cash-book opening + cash IN
+  − cash OUT. Note: bank is not tracked as a separate account yet.
+- **Outstanding aging report** — new **Aging** sidebar screen: per-customer
+  and per-supplier rows bucketed **1–30 / 31–60 / 61–90 / 91–120 / 121–240 /
+  241+ days** by the age of the originating bill, with bucket totals and a
+  grand total. **FIFO assumption:** payments are assumed to settle the
+  oldest bills first — a payment against a ₹2,100 hundred-day-old bill and a
+  ₹525 forty-day-old bill lands on the older bill first, so the aged rows
+  reflect which bills are truly still unpaid, not a bill-by-bill settlement.
+- **Item master upgrade** — products now carry **MRP** and **Company**
+  (manufacturer). The add/edit dialog has both fields, the product list
+  shows a computed **Margin %** column (`(wholesale − purchase) / purchase`),
+  and the billing autocomplete dropdown shows the MRP next to each product.
+  Both are CSV import/export columns too. Existing databases pick them up
+  automatically (`mrp` = 0, company empty) — no data loss.
+- **Cash Book (day book)** — new sidebar screen recording cash movement
+  **outside** bills: expenses, owner drawings, salary, rent, income. Entries
+  are dated IN/OUT with description + category, the list shows a running
+  balance, and the opening balance is settable on the screen. Amounts must
+  be > 0. Bill payments are deliberately **not** recorded here — bill cash
+  stays on the bills, so nothing is double counted. Cash in hand on the
+  Dashboard = this book's balance.
+- **Supplier ledger (creditors)** — new **Suppliers** screen mirroring
+  customer dues: each supplier's outstanding (purchases − payments made),
+  a **Pay supplier** dialog (amount, date, mode Cash/UPI/Bank, note) that
+  **cannot exceed the outstanding**, and a per-supplier payment history.
+  Creditor totals feed the Dashboard strip and the supplier side of the
+  Aging report.
+- **Delivery challans** — the Invoices screen has **New challan**, and there
+  is a dedicated **Challans** sidebar screen. Pick a customer, add items
+  (same picker as billing), save — no GST/tax, numbered `CH-0001`, … and the
+  challan prints a **CHALLAN PDF** (A4 + 80mm thermal, honoring your
+  invoice-design header). **Challans do not touch stock or khata until
+  converted** — each row has **Convert to bill**, which loads its items
+  into a fresh billing tab; normal billing then decrements stock and
+  updates khata when the bill is saved.
+- **Expiry tracking** — purchase item rows have an optional **Expiry**
+  (YYYY-MM-DD) field. The Stock screen shows the earliest upcoming expiry
+  per product, and the Dashboard warns about stock **expiring within 60
+  days** (expired lots shown in red). Kept simple: no lot-level sale
+  matching.
+
+## Deliberately out of scope (why)
+
+- **e-Way bills** — generating an e-Way bill needs the live GST portal API
+  with the shop's GST login credentials; an offline desktop app can't do
+  this safely or reliably.
+- **Payment-gateway / UPI integration** — collecting money online needs a
+  merchant account, KYC, and settlement contracts; the app records Cash/UPI/
+  Bank as *modes* of payment, but the actual transfer stays in the shop's
+  UPI app.
+- **ERP-to-ERP ordering** — sending purchase orders into a supplier's ERP
+  system needs both sides on a shared protocol the suppliers don't have.
 
 ## How to run (developers)
 
@@ -222,13 +278,14 @@ billbook_data`. After code changes, rebuild with `docker compose build`.
 | File | What it does |
 |---|---|
 | `main.py` | Entry point — loads theme, opens the app window |
-| `db.py` | SQLite schema + all data access: products, customers/khata, bills, bill items, payments, stock movements, bill history, suppliers, purchases, returns/credit notes, settings; billing math (`compute_totals`) |
+| `db.py` | SQLite schema + all data access: products, customers/khata, bills, bill items, payments, stock movements, bill history, suppliers, purchases, returns/credit notes, cash book, delivery challans, supplier payments, aging (FIFO), expiry; billing math (`compute_totals`) |
 | `invoices.py` | Invoice generation as **PDF** (reportlab, A4 + 80mm thermal) + print orchestration: builds the PDF per bill, saves it under `billbook_data/invoices/` |
 | `printing.py` | Universal print engine: PDF rendering, printer enumeration (`win32print` on Windows), direct OS printing via `os.startfile(path, "print")`, graceful PDF-only fallback elsewhere |
 | `ui.py` | Core screens: dashboard, billing (multi-tab), products, stock, customers, invoices, reports, invoice design, backup, settings |
 | `print_ui.py` | Print offer dialog, print settings dialog, invoice live preview, accent palette (split out of `ui.py` to keep modules small) |
 | `purchases_ui.py` | Purchases screen: supplier picker, purchase entry, purchase history |
 | `returns_ui.py` | Sales-return dialog (credit notes) + WhatsApp bill sharing |
+| `shop_ui.py` | Marg-parity screens: Cash Book (day book), delivery challans (+ challan dialog), Suppliers ledger, Outstanding aging report |
 | `backup.py` | Backup engine + Backup & restore screen: manual timestamped zips, restore with safety copy, silent auto-backup on exit with 14-backup retention |
 | `updater.py` | Self-update from GitHub: background latest-commit check, source-ZIP download + staging, `apply_update.bat` generator (copies new files excluding `billbook_data/`, rebuilds the `.exe` after exit, restarts) |
 | `version.txt` | Commit SHA of the running build — written at push/build time; the updater compares it with GitHub's latest |
@@ -448,3 +505,45 @@ push size limit, the print dialogs moved to `print_ui.py`, purchases to
 `purchases_ui.py`, and returns/WhatsApp to `returns_ui.py` — pure moves plus
 the new code, verified by 25 headless Xvfb tests covering every feature
 end-to-end.
+
+**Marg-ERP parity round (7 features):** the shop owner showed photos of the
+shop's current software (Marg ERP) and asked for the missing pieces, so seven
+features were added: (1) *Today-at-a-glance strip* — the Dashboard now shows
+bills + sales today, cash in hand (from the cash book), debtors, creditors,
+and stock value, all live from the DB; bank is noted as untracked since no
+bank account is modelled. (2) *Outstanding aging* — a new **Aging** screen
+with the classic 1–30 … 241+ day buckets for customers and suppliers; ages
+come from the originating bill's date and **payments settle the oldest
+bills first (FIFO)**, implemented in `DB._allocate_fifo` — this is an
+assumption, not a ledger link: BillBook doesn't tie individual payments to
+specific bills, so FIFO is the documented convention. (3) *Item master* —
+`mrp` and `company` columns added via guarded `ALTER TABLE` in `_migrate`
+(the same pattern `payments.mode` used), wired into the product dialog,
+a computed Margin % column, billing autocomplete, and CSV import/export;
+old databases get `mrp=0` / empty company. (4) *Cash book* — a **Cash Book**
+screen with dated IN/OUT entries, categories, running balance, settable
+opening balance, and amount > 0 validation; it tracks **non-bill cash only**
+so cash sales are never double counted, and the Dashboard's cash-in-hand
+reads from it. (5) *Supplier ledger* — `supplier_payments` table, a
+**Suppliers** screen with per-supplier outstanding, a Pay-supplier dialog
+capped at the outstanding, and payment history; feeds the Dashboard and the
+creditor side of aging. (6) *Delivery challans* — `challans` /
+`challan_items` tables numbered `CH-0001`…, a **Challans** screen plus a
+New-challan button on Invoices, a no-GST challan PDF (A4 + thermal) reusing
+the Platypus invoice patterns, and **Convert to bill** which loads the items
+into a billing tab; challans move no stock/khata until the bill is saved.
+(7) *Expiry tracking* — optional `purchase_items.expiry_date` (guarded
+ALTER), earliest-expiry column on Stock, and a 60-day near-expiry warning
+on the Dashboard; deliberately lot-agnostic (no per-sale lot matching).
+One real bug was caught by the headless tests: converting a challan
+switched to the billing screen — which destroys the challans frame — then
+called `self.refresh()` on the dead widget; the mark-converted write was
+moved before the screen switch. To keep `ui.py` under the 128 KB push-file
+limit, the four new screens went into a new `shop_ui.py` module and `ui.py`
+only gained lazy imports plus small dashboard/products/stock/invoices edits.
+**Out of scope, with reasons:** e-Way bills (needs live GST portal API +
+shop login), payment-gateway/UPI integration (needs merchant account/KYC),
+ERP-to-ERP ordering (suppliers aren't on a shared protocol). Verified by 14
+headless checks: py_compile of all modules, DB-level aging/FIFO/cash/supplier/
+challan/expiry math, old-DB migration, A4 + thermal challan PDFs, and a
+full Xvfb GUI run showing every screen including the convert-to-bill flow.
