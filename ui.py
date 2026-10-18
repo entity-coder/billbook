@@ -19,6 +19,7 @@ from tkinter import ttk
 
 import invoices
 import printing
+import grid_billing
 from backup import BackupFrame, auto_backup_on_exit
 from db import data_dir
 from print_ui import ACCENTS, PrintDialog, PrintOfferDialog, render_invoice_preview
@@ -422,7 +423,8 @@ UNITS = ["pcs", "kg", "g", "bag", "box", "litre", "packet", "dozen"]
 
 class ProductsFrame(ctk.CTkFrame):
     COLS = ("ID", "Name", "SKU", "Purchase", "Wholesale", "Retail", "MRP",
-            "Company", "Margin%", "Unit", "GST%", "Stock", "Supplier")
+            "Company", "Margin%", "Pack", "Unit", "GST%", "Stock",
+            "Supplier")
 
     @staticmethod
     def margin_pct(p):
@@ -462,7 +464,7 @@ class ProductsFrame(ctk.CTkFrame):
 
         fr, self.tv = tree(self, self.COLS,
                             widths=(40, 200, 100, 75, 75, 75, 75, 110, 65,
-                                    50, 50, 65, 110),
+                                    45, 50, 50, 65, 110),
                             height=22)
         fr.pack(fill="both", expand=True, pady=6)
         self.tv.bind("<Double-1>", lambda e: self.edit_dialog())
@@ -476,7 +478,7 @@ class ProductsFrame(ctk.CTkFrame):
                 p["id"], p["name"], p["sku"], money(p["purchase_price"]),
                 money(p["wholesale_price"]), money(p["retail_price"]),
                 money(p.get("mrp") or 0), p.get("company") or "",
-                self.margin_pct(p),
+                self.margin_pct(p), int(p.get("pack_size") or 1),
                 p["unit"], f"{p['gst_percent']:g}",
                 f"{p['stock']:g}", p["supplier"]))
 
@@ -514,6 +516,8 @@ class ProductsFrame(ctk.CTkFrame):
         unit = ctk.CTkOptionMenu(win, values=UNITS)
         unit.set(p.get("unit", "pcs") or "pcs")
         unit.pack(fill="x", padx=14)
+        row("Pack size (pieces per pack)", "pack_size",
+            str(int(p.get("pack_size") or 1)))
         row("GST %", "gst_percent", "0")
         row("Current stock", "stock", "0")
         row("Low-stock alert below", "low_stock_threshold", "5")
@@ -530,10 +534,17 @@ class ProductsFrame(ctk.CTkFrame):
                           "mrp", "gst_percent", "stock",
                           "low_stock_threshold"):
                     float(entries[k].get() or 0)
+                pack_size = int(entries["pack_size"].get() or 1)
+                assert pack_size >= 1
             except ValueError:
                 messagebox.showerror("Products",
                                      "Prices, MRP, GST, stock and threshold "
                                      "must be numbers.")
+                return
+            except AssertionError:
+                messagebox.showerror("Products",
+                                     "Pack size must be a whole number "
+                                     "\u2265 1.")
                 return
             result.update({
                 "name": entries["name"].get().strip(),
@@ -544,6 +555,7 @@ class ProductsFrame(ctk.CTkFrame):
                 "mrp": float(entries["mrp"].get() or 0),
                 "company": entries["company"].get().strip(),
                 "unit": unit.get(),
+                "pack_size": pack_size,
                 "gst_percent": float(entries["gst_percent"].get() or 0),
                 "stock": float(entries["stock"].get() or 0),
                 "low_stock_threshold": float(
@@ -614,6 +626,7 @@ class ProductsFrame(ctk.CTkFrame):
                     mrp=num("mrp"),
                     company=(row.get("company") or "").strip(),
                     unit=(row.get("unit") or "pcs").strip(),
+                    pack_size=max(int(num("pack_size", 1)), 1),
                     gst_percent=num("gst_percent"),
                     stock=num("stock"), low_stock_threshold=num(
                         "low_stock_threshold", 5),
@@ -631,11 +644,14 @@ class ProductsFrame(ctk.CTkFrame):
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["name", "sku", "purchase_price", "wholesale_price",
-                        "retail_price", "mrp", "company", "unit", "gst_percent",
-                        "stock", "low_stock_threshold", "supplier"])
+                        "retail_price", "mrp", "company", "unit", "pack_size",
+                        "gst_percent", "stock", "low_stock_threshold",
+                        "supplier"])
             for p in self.db.list_products():
                 w.writerow([p["name"], p["sku"], p["purchase_price"],
-                            p["wholesale_price"], p["retail_price"], p["unit"],
+                            p["wholesale_price"], p["retail_price"],
+                            p.get("mrp") or 0, p.get("company") or "",
+                            p["unit"], int(p.get("pack_size") or 1),
                             p["gst_percent"], p["stock"],
                             p["low_stock_threshold"], p["supplier"]])
         messagebox.showinfo("Export", f"Exported to {path}")
@@ -793,8 +809,11 @@ class BillingFrame(ctk.CTkFrame):
                      font=ctk.CTkFont(size=22, weight="bold")).pack(
                          anchor="w", pady=(4, 6))
 
+        grid_billing.install_header(self)
+
         self.tabview = ctk.CTkTabview(self)
         self.tabview.pack(fill="both", expand=True)
+        self.tabview.configure(command=self._sync_view_var)
 
         app.bind("<F1>", lambda e: self.shortcuts_help())
         app.bind("<F2>", lambda e: self.new_tab())
@@ -807,6 +826,7 @@ class BillingFrame(ctk.CTkFrame):
         app.bind("<F8>", lambda e: self.focus_bill_discount())
         app.bind("<F9>", lambda e: self.repeat_last_bill_current())
         app.bind("<Insert>", self._guarded_key(lambda: self.product_dialog()))
+        app.bind("<Control-g>", self._guarded_key(self.toggle_bill_view))
         app.bind("<Prior>", lambda e: self.switch_tab(-1))
         app.bind("<Next>", lambda e: self.switch_tab(1))
         app.bind("<End>", self.end_bill_key)
@@ -833,8 +853,25 @@ class BillingFrame(ctk.CTkFrame):
         cur = self.current()
         if cur:
             tab, w = cur
-            w["prod_e"].focus_set()
-            self._suggest_show(tab, w, show_all=True)
+            if (w.get("bill_view") or "grid") == "grid" \
+                    and w.get("grid_panel"):
+                w["grid_panel"].focus_find()
+                w["grid_panel"].refresh()
+            else:
+                w["prod_e"].focus_set()
+                self._suggest_show(tab, w, show_all=True)
+
+    def set_bill_view(self, value):
+        grid_billing.set_view(self, value)
+
+    def toggle_bill_view(self):
+        grid_billing.toggle_view(self)
+
+    def _sync_view_var(self):
+        grid_billing.sync_view_var(self)
+
+    def _apply_bill_view(self, tab, w):
+        grid_billing.apply_view(self, tab, w)
 
     def _typing_focus(self):
         try:
@@ -945,7 +982,7 @@ class BillingFrame(ctk.CTkFrame):
         rows = [
             ("F1", "This help"),
             ("F2", "New bill tab"),
-            ("F3", "Jump to product search (+ open list)"),
+            ("F3", "Jump to product search / grid Find box"),
             ("F4", "Choose customer (Esc closes)"),
             ("F6", "Toggle Wholesale / Retail prices"),
             ("F8", "Jump to bill discount field"),
@@ -960,6 +997,7 @@ class BillingFrame(ctk.CTkFrame):
             ("PgUp / PgDn", "Switch bill tabs"),
             ("Ctrl+S / Ctrl+Enter", "Save bill"),
             ("Ctrl+P", "Print bill"),
+            ("Ctrl+G", "Toggle Grid / Cards product view"),
         ]
         for key, desc in rows:
             r = ctk.CTkFrame(win, fg_color="transparent")
@@ -1271,6 +1309,8 @@ class BillingFrame(ctk.CTkFrame):
         cards_sf = ctk.CTkScrollableFrame(frame, fg_color="transparent")
         cards_sf.pack(fill="both", expand=True, pady=6)
 
+        grid_billing.build_panel(frame, self, tab, w)
+
         r3 = ctk.CTkFrame(frame, fg_color="transparent")
         r3.pack(fill="x", pady=2)
         ctk.CTkButton(r3, text="Remove selected",
@@ -1327,6 +1367,7 @@ class BillingFrame(ctk.CTkFrame):
                   "grand_lbl": grand_lbl,
                   "suggest": suggest, "frame": frame})
         self._refresh_customer_btn(tab, w)
+        self._apply_bill_view(tab, w)
         return w
 
     def _set_customer(self, tab, c, w):
@@ -1351,6 +1392,12 @@ class BillingFrame(ctk.CTkFrame):
 
     def _on_mode_change(self, tab, value):
         tab.price_mode = value.lower()
+        for _name, (t, w) in self.tabs.items():
+            if t is tab:
+                gp = w.get("grid_panel")
+                if gp is not None:
+                    gp.set_price_mode(tab.price_mode)
+                break
 
     def _on_disc_change(self, tab, disc_e, w):
         tab.bill_discount = fnum(disc_e)
