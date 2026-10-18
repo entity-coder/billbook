@@ -216,6 +216,20 @@ no Chrome extension needed.
   per product, and the Dashboard warns about stock **expiring within 60
   days** (expired lots shown in red). Kept simple: no lot-level sale
   matching.
+- **Re-Order list** — a dedicated **Re-Order** sidebar screen answering
+  "what do I order from which supplier today?": every product at/below its
+  low-stock threshold (products with no threshold set are skipped), sorted
+  by urgency (stock ÷ threshold, lowest first). Each row shows the
+  suggested **order qty** (2× threshold − stock, min 1), the last
+  (weighted-average) purchase rate, estimated amount, supplier name + phone,
+  and nearest expiry. Select rows → **Load into Purchases** pre-fills the
+  Purchases entry rows at the last purchase rate (you just pick the
+  supplier and save); **Print list** makes an order-list PDF (A4 + 80mm
+  thermal, honoring your invoice-design header). No database migration —
+  it reuses the existing stock/threshold/supplier/cost/expiry columns.
+  Keyboard friendly: arrows move, Enter toggles a row, Esc clears the
+  selection; a healthy stock shows "All stock is healthy" instead of an
+  empty grid.
 
 ## Deliberately out of scope (why)
 
@@ -285,7 +299,7 @@ billbook_data`. After code changes, rebuild with `docker compose build`.
 | `print_ui.py` | Print offer dialog, print settings dialog, invoice live preview, accent palette (split out of `ui.py` to keep modules small) |
 | `purchases_ui.py` | Purchases screen: supplier picker, purchase entry, purchase history |
 | `returns_ui.py` | Sales-return dialog (credit notes) + WhatsApp bill sharing |
-| `shop_ui.py` | Marg-parity screens: Cash Book (day book), delivery challans (+ challan dialog), Suppliers ledger, Outstanding aging report |
+| `shop_ui.py` | Marg-parity screens: Cash Book (day book), delivery challans (+ challan dialog), Suppliers ledger, Outstanding aging report, Re-Order list |
 | `backup.py` | Backup engine + Backup & restore screen: manual timestamped zips, restore with safety copy, silent auto-backup on exit with 14-backup retention |
 | `updater.py` | Self-update from GitHub: background latest-commit check, source-ZIP download + staging, `apply_update.bat` generator (copies new files excluding `billbook_data/`, rebuilds the `.exe` after exit, restarts) |
 | `version.txt` | Commit SHA of the running build — written at push/build time; the updater compares it with GitHub's latest |
@@ -539,7 +553,7 @@ One real bug was caught by the headless tests: converting a challan
 switched to the billing screen — which destroys the challans frame — then
 called `self.refresh()` on the dead widget; the mark-converted write was
 moved before the screen switch. To keep `ui.py` under the 128 KB push-file
-limit, the four new screens went into a new `shop_ui.py` module and `ui.py`
+limit, the parity screens went into a new `shop_ui.py` module and `ui.py`
 only gained lazy imports plus small dashboard/products/stock/invoices edits.
 **Out of scope, with reasons:** e-Way bills (needs live GST portal API +
 shop login), payment-gateway/UPI integration (needs merchant account/KYC),
@@ -547,3 +561,18 @@ ERP-to-ERP ordering (suppliers aren't on a shared protocol). Verified by 14
 headless checks: py_compile of all modules, DB-level aging/FIFO/cash/supplier/
 challan/expiry math, old-DB migration, A4 + thermal challan PDFs, and a
 full Xvfb GUI run showing every screen including the convert-to-bill flow.
+(8) *Re-Order list* — no schema change at all: `reorder_products()` in
+`db.py` queries `stock <= low_stock_threshold AND low_stock_threshold > 0`
+and sorts in Python by urgency (stock ÷ threshold, lowest first — SQL could
+sort it too, but the division-by-zero guard reads cleaner in Python).
+Suggested order qty is `max(1, 2×threshold − stock)` — a simple heuristic
+that refills to twice the threshold; it's deliberately not a demand forecast
+(it would need sales velocity, lead time, seasonality). The screen reuses
+`purchases_ui.prefill_items()` instead of duplicating the entry-row logic,
+so "Load into Purchases" just hands off and the normal save path updates
+stock and weighted-average cost. Supplier phone comes from a
+`get_supplier_by_name()` exact-match lookup because the product `supplier`
+field is free text. Verified by 32 headless checks: urgency sort, order-qty
+math (including negative stock and stock == threshold), threshold-0
+exclusion, Enter/Esc keyboard toggles, prefill payload, A4 + thermal PDFs,
+and the empty-state message.

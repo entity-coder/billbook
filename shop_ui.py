@@ -1,7 +1,8 @@
 """
 BillBook — shop_ui.py
 Marg-ERP parity screens: Cash Book (day book), Delivery Challans,
-Supplier ledger (creditor payments), Outstanding Aging report.
+Supplier ledger (creditor payments), Outstanding Aging report,
+Re-Order list (low-stock purchase planning).
 """
 
 from datetime import date
@@ -673,3 +674,175 @@ class AgingFrame(ctk.CTkFrame):
                     f"{lbl}: {money(s)}"
                     for lbl, s in zip(self.BUCKETS, sums))
                 + f"  \u00b7  Grand total: {money(grand)}")
+
+
+# ---------------------------------------------------------------------------
+# Re-Order list (low-stock purchase planning) — Marg's "Re-Order" menu item
+# ---------------------------------------------------------------------------
+class ReOrderFrame(ctk.CTkFrame):
+    """One screen answering "what do I order from which supplier today?":
+    every product at/below its low-stock threshold (threshold > 0 only),
+    sorted by urgency (stock / threshold, lowest first), with a suggested
+    order qty, the last (weighted-average) purchase rate and the supplier."""
+
+    def __init__(self, parent, db, app):
+        super().__init__(parent, fg_color="transparent")
+        self.db, self.app = db, app
+        ctk.CTkLabel(self, text="Re-Order list",
+                     font=ctk.CTkFont(size=22, weight="bold")).pack(
+                         anchor="w", pady=(4, 2))
+        ctk.CTkLabel(
+            self,
+            text="Products at or below their low-stock threshold (products "
+                 "with no threshold set are skipped). Suggested order qty is "
+                 "2 x threshold minus stock. Select rows, then load them "
+                 "into Purchases.",
+            text_color="gray", wraplength=760, justify="left").pack(
+                anchor="w", pady=(0, 6))
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.pack(fill="x", pady=4)
+        ctk.CTkButton(btns, text="Load into Purchases", fg_color="#1f6f43",
+                      hover_color="#175733",
+                      command=self.load_into_purchases).pack(side="left",
+                                                             padx=4)
+        ctk.CTkButton(btns, text="Print list",
+                      command=self.print_list).pack(side="left", padx=4)
+        ctk.CTkButton(btns, text="Refresh",
+                      command=self.refresh).pack(side="right", padx=4)
+        ctk.CTkLabel(btns,
+                     text="Keys: arrows move, Enter toggles row, Esc clears",
+                     text_color="gray").pack(side="right", padx=12)
+
+        self.empty_lbl = ctk.CTkLabel(
+            self, text="All stock is healthy — nothing is below its "
+                       "low-stock threshold.",
+            font=ctk.CTkFont(size=14), text_color="gray")
+        fr, self.tv = _tree(self,
+                            ("Pick", "Product", "SKU", "Stock", "Threshold",
+                             "Order qty", "Last rate", "Est. amount",
+                             "Supplier", "Phone", "Nearest expiry"),
+                            widths=(50, 200, 90, 70, 80, 80, 90, 100,
+                                    140, 100, 110),
+                            height=18)
+        self.tree_frame = fr
+        self.tv.bind("<Return>", self._toggle_focused)
+        self.tv.bind("<Escape>", lambda e: self._clear_selection())
+        # Left-click on the "Pick" column toggles selection too.
+        self.tv.bind("<ButtonRelease-1>", self._click_toggle)
+        self._click_x = None
+        self.tv.bind("<Button-1>", lambda e: setattr(
+            self, "_click_x", e.x))
+        self.rows = []
+        self.refresh()
+
+    def _row_data(self, p):
+        stock = float(p["stock"] or 0)
+        th = float(p["low_stock_threshold"] or 0)
+        order_qty = max(1.0, 2 * th - stock)
+        last_rate = float(p["purchase_price"] or 0)
+        sup_name = (p["supplier"] or "").strip()
+        phone = ""
+        if sup_name:
+            s = self.db.get_supplier_by_name(sup_name)
+            if s:
+                phone = s["phone"] or ""
+        expiry = self.db.product_earliest_expiry(p["id"]) or ""
+        return {"product_id": p["id"], "name": p["name"],
+                "sku": p["sku"] or "", "unit": p["unit"] or "",
+                "stock": stock, "threshold": th, "order_qty": order_qty,
+                "last_rate": last_rate,
+                "est_amount": order_qty * last_rate,
+                "supplier": sup_name, "phone": phone, "expiry": expiry}
+
+    def refresh(self):
+        for r in self.tv.get_children():
+            self.tv.delete(r)
+        self.rows = [self._row_data(p) for p in self.db.reorder_products()]
+        if not self.rows:
+            self.tree_frame.pack_forget()
+            self.empty_lbl.pack(fill="both", expand=True, pady=40)
+            return
+        self.empty_lbl.pack_forget()
+        self.tree_frame.pack(fill="both", expand=True, pady=6)
+        for r in self.rows:
+            self.tv.insert("", "end", iid=str(r["product_id"]), values=(
+                "\u2610", r["name"], r["sku"] or "-",
+                f"{r['stock']:g}", f"{r['threshold']:g}",
+                f"{r['order_qty']:g}", money(r["last_rate"]),
+                money(r["est_amount"]),
+                r["supplier"] or "-", r["phone"] or "-",
+                r["expiry"] or "-"))
+        self._paint_checks()
+
+    def _paint_checks(self):
+        sel = set(self.tv.selection())
+        for iid in self.tv.get_children():
+            vals = list(self.tv.item(iid, "values"))
+            vals[0] = "\u2611" if iid in sel else "\u2610"
+            self.tv.item(iid, values=vals)
+
+    def _toggle_focused(self, event=None):
+        foc = self.tv.focus()
+        if not foc:
+            return "break"
+        if foc in self.tv.selection():
+            self.tv.selection_remove(foc)
+        else:
+            self.tv.selection_add(foc)
+        self._paint_checks()
+        return "break"
+
+    def _click_toggle(self, event=None):
+        # Toggle only when the click landed in the "Pick" column.
+        if self._click_x is None:
+            return
+        col = self.tv.identify_column(self._click_x)
+        row = self.tv.identify_row(self._click_x)
+        if col == "#1" and row:
+            self.tv.selection_toggle(row)
+            self._paint_checks()
+
+    def _clear_selection(self):
+        self.tv.selection_remove(self.tv.selection())
+        self._paint_checks()
+
+    def selected_rows(self):
+        by_id = {str(r["product_id"]): r for r in self.rows}
+        return [by_id[i] for i in self.tv.selection() if i in by_id]
+
+    def load_into_purchases(self):
+        sel = self.selected_rows()
+        if not sel:
+            messagebox.showinfo("Re-Order",
+                                "Select one or more products first "
+                                "(Enter toggles a row).")
+            return
+        self.app.show("purchases")
+        pf = self.app.screens["purchases"]
+        payload = [{
+            "product_id": r["product_id"], "name": r["name"],
+            "unit": r["unit"], "qty": r["order_qty"],
+            "cost": r["last_rate"],
+            "gst_percent": float(self.db.get_product(
+                r["product_id"])["gst_percent"] or 0),
+            "expiry_date": ""} for r in sel]
+        n = pf.prefill_items(payload)
+        messagebox.showinfo(
+            "Re-Order",
+            f"Loaded {n} item(s) into Purchases at the last purchase "
+            "rate.\nChoose the supplier and save — stock updates then.")
+
+    def print_list(self):
+        if not self.rows:
+            messagebox.showinfo("Re-Order", "Nothing to print — stock is "
+                                           "healthy.")
+            return
+        try:
+            import printing
+            pdf = printing.generate_reorder_pdf(
+                self.rows, self.db.shop_profile(), self.db.print_prefs())
+            printing.open_pdf(pdf)
+            messagebox.showinfo("Re-Order", f"Re-order list saved at:\n{pdf}")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("Re-Order", f"Could not build the PDF: {e}")
