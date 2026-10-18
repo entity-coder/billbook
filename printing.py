@@ -706,6 +706,131 @@ def generate_challan_pdf(challan, items, profile, prefs, dest_path=None):
     return dest_path
 
 
+def generate_reorder_pdf(rows, profile, prefs, dest_path=None):
+    """Re-order list PDF: products below their low-stock threshold with
+    suggested order qty, last rate and supplier. Honors the invoice-design
+    shop header; A4 + 80mm thermal layouts. Each row is a dict with:
+    name, sku, stock, threshold, order_qty, last_rate, supplier, phone,
+    expiry."""
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (HRFlowable, Paragraph, SimpleDocTemplate,
+                                    Spacer, Table, TableStyle)
+
+    narrow = prefs.get("paper") == "thermal"
+    accent = colors.HexColor(prefs.get("accent", "#1f6f43") or "#1f6f43")
+    dark, grey = colors.HexColor("#222222"), colors.HexColor("#777777")
+    fscale = {"compact": 0.85, "standard": 1.0,
+              "large": 1.18}.get(prefs.get("font_size", "standard"), 1.0)
+    fs = round((8 if narrow else 10) * fscale)
+    fs_title = round((13 if narrow else 20) * fscale)
+
+    def P(text, size=fs, bold=False, color=dark, align=TA_LEFT, space=2):
+        return Paragraph(text, ParagraphStyle(
+            "ro", fontName=_FONT_BOLD if bold else _FONT_NAME,
+            fontSize=size, leading=size * 1.3, textColor=color,
+            alignment=align, spaceAfter=space))
+
+    story = [P(profile.get("shop_name") or "BillBook Shop", size=fs_title,
+               bold=True, color=accent, align=TA_CENTER, space=1)]
+    if prefs.get("show_tagline", True) and profile.get("shop_tagline"):
+        story.append(P(profile["shop_tagline"], align=TA_CENTER, space=1))
+    if prefs.get("show_address", True) and profile.get("shop_address"):
+        story.append(P(profile["shop_address"], color=grey,
+                       align=TA_CENTER, space=1))
+    if prefs.get("show_phone", True) and profile.get("shop_phone"):
+        story.append(P(f"Phone: {profile['shop_phone']}", color=grey,
+                       align=TA_CENTER, space=1))
+    story.append(HRFlowable(width="100%", thickness=2.5, color=accent,
+                            spaceAfter=6, spaceBefore=4))
+    story.append(P("RE-ORDER LIST", size=fs + 4, bold=True, color=accent,
+                   align=TA_CENTER, space=2))
+    story.append(P("Stock at or below the low-stock threshold — "
+                   "suggested order quantities are 2x threshold minus stock.",
+                   color=grey, align=TA_CENTER, space=6))
+    story.append(P(f"<b>Date:</b> {datetime.now().strftime('%d-%m-%Y')}",
+                   align=TA_LEFT, space=8))
+
+    total_w = _usable_width(narrow)
+    if narrow:
+        colspec = [("#", 12), ("Product", None), ("Order", 32),
+                   ("Rate", 40), ("Supplier", None)]
+    else:
+        colspec = [("#", 24), ("Product", None), ("Stock", 50),
+                   ("Order", 55), ("Last rate", 75), ("Est. amount", 85),
+                   ("Supplier", None), ("Expiry", 80)]
+    data = [[h for h, _ in colspec]]
+    tot_amt = 0.0
+    for i, r in enumerate(rows, 1):
+        est = float(r["order_qty"]) * float(r["last_rate"] or 0)
+        tot_amt += est
+        if narrow:
+            data.append([str(i),
+                         f"{r['name']}" + (f" ({r['sku']})" if r.get("sku")
+                                           else ""),
+                         f"{r['order_qty']:g}", money(r["last_rate"]),
+                         r.get("supplier") or "-"])
+        else:
+            sup = r.get("supplier") or "-"
+            if r.get("phone"):
+                sup += f" ({r['phone']})"
+            data.append([str(i),
+                         f"{r['name']}" + (f"  · {r['sku']}"
+                                           if r.get("sku") else ""),
+                         f"{float(r['stock']):g}",
+                         f"{float(r['order_qty']):g}",
+                         money(r["last_rate"]), money(est), sup,
+                         r.get("expiry") or "-"])
+    if not narrow:
+        data.append(["", "", "", "", "",
+                     P(f"<b>{money(tot_amt)}</b>", bold=True, align=TA_RIGHT),
+                     "", ""])
+    fixed = sum(w for _, w in colspec if w is not None)
+    widths = [total_w - fixed if w is None else w for _, w in colspec]
+    t = Table(data, colWidths=widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), accent),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), _FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, -1), fs),
+        ("FONTNAME", (0, 1), (-1, -1), _FONT_NAME),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (1, 0), (1, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -2),
+         [colors.white, colors.HexColor("#f7f7f7")]),
+        ("LINEABOVE", (0, -1), (-1, -1), 1.5, accent),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 10))
+    now = datetime.now().strftime("%d-%m-%Y %I:%M %p")
+    story.append(P(f"Generated by BillBook — {now}", size=fs - 1,
+                   color=grey, align=TA_CENTER, space=2))
+
+    if dest_path is None:
+        dest_path = invoices_dir() / (
+            f"reorder_list_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+    dest_path = Path(dest_path)
+    if narrow:
+        pagesize = (80 * mm, 130 * mm + len(rows) * 8 * mm)
+        margins = dict(leftMargin=2 * mm, rightMargin=2 * mm,
+                       topMargin=3 * mm, bottomMargin=3 * mm)
+    else:
+        pagesize = A4
+        margins = dict(leftMargin=12 * mm, rightMargin=12 * mm,
+                       topMargin=12 * mm, bottomMargin=12 * mm)
+    doc = SimpleDocTemplate(str(dest_path), pagesize=pagesize,
+                            title="Re-Order List",
+                            author=profile.get("shop_name") or "BillBook",
+                            **margins)
+    doc.build(story)
+    return dest_path
+
+
 # ---------------------------------------------------------------------------
 # High-level: build + print one saved bill
 # ---------------------------------------------------------------------------
