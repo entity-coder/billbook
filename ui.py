@@ -108,6 +108,10 @@ NAV = [
     ("Purchases", "purchases"),
     ("Stock", "stock"),
     ("Customers", "customers"),
+    ("Suppliers", "suppliers"),
+    ("Cash Book", "cashbook"),
+    ("Challans", "challans"),
+    ("Aging", "aging"),
     ("Invoices", "invoices"),
     ("Reports", "reports"),
     ("Invoice Design", "invoice_design"),
@@ -270,6 +274,18 @@ class App(ctk.CTk):
         if key == "purchases":
             from purchases_ui import PurchasesFrame
             screen_cls = PurchasesFrame
+        elif key == "cashbook":
+            from shop_ui import CashBookFrame
+            screen_cls = CashBookFrame
+        elif key == "challans":
+            from shop_ui import ChallansFrame
+            screen_cls = ChallansFrame
+        elif key == "suppliers":
+            from shop_ui import SuppliersFrame
+            screen_cls = SuppliersFrame
+        elif key == "aging":
+            from shop_ui import AgingFrame
+            screen_cls = AgingFrame
         else:
             screen_cls = {"dashboard": DashboardFrame, "billing": BillingFrame,
                           "products": ProductsFrame, "stock": StockFrame,
@@ -309,25 +325,41 @@ class DashboardFrame(ctk.CTkFrame):
 
         n, total = db.sales_on(today_iso())
         dues = db.total_dues()
+        creditors = db.total_creditors()
+        cash = db.cash_balance()
+        stock_val = db.stock_value()
         low = db.low_stock_products()
         week_ago = (date.today() - timedelta(days=7)).isoformat()
         top = db.top_products(week_ago, today_iso(), limit=8)
+        near_exp = db.near_expiry_products(60)
 
+        # Today-at-a-glance strip (Marg-style summary row), all live from db.
         cards = ctk.CTkFrame(self, fg_color="transparent")
         cards.pack(fill="x", pady=6)
-        for title, value, color in [
-                ("Today's sales", f"{n} bills \u00b7 {money(total)}", "#1f6f43"),
-                ("Pending dues", money(dues), "#b3261e"),
-                ("Low-stock items", str(len(low)), "#b26a00"),
-                ("Stock value", money(db.stock_value()), "#0b5fa5")]:
+        glance = [
+                ("Bills today", str(n), "#0b5fa5"),
+                ("Sales today", money(total), "#1f6f43"),
+                ("Cash in hand", money(cash), "#1f6f43"),
+                ("Debtors (to receive)", money(dues), "#b3261e"),
+                ("Creditors (to pay)", money(creditors), "#b26a00"),
+                ("Stock value", money(stock_val), "#0b5fa5")]
+        for title, value, color in glance:
             card = ctk.CTkFrame(cards, corner_radius=10, border_width=1,
                                 border_color=color)
-            card.pack(side="left", fill="x", expand=True, padx=6)
-            ctk.CTkLabel(card, text=title, text_color="gray").pack(
-                anchor="w", padx=12, pady=(8, 0))
+            card.pack(side="left", fill="x", expand=True, padx=4)
+            ctk.CTkLabel(card, text=title, text_color="gray",
+                         font=ctk.CTkFont(size=11)).pack(
+                anchor="w", padx=10, pady=(6, 0))
             ctk.CTkLabel(card, text=value,
-                         font=ctk.CTkFont(size=18, weight="bold")).pack(
-                             anchor="w", padx=12, pady=(0, 10))
+                         font=ctk.CTkFont(size=15, weight="bold")).pack(
+                             anchor="w", padx=10, pady=(0, 8))
+        ctk.CTkLabel(
+            self,
+            text="Cash in hand = cash-book opening + IN \u2212 OUT "
+                 "(non-bill cash only; bill cash stays on the bills). "
+                 "Bank is not tracked separately yet.",
+            text_color="gray", font=ctk.CTkFont(size=11),
+            wraplength=900, justify="left").pack(anchor="w", pady=(0, 4))
 
         cols = ctk.CTkFrame(self, fg_color="transparent")
         cols.pack(fill="both", expand=True, pady=8)
@@ -359,6 +391,23 @@ class DashboardFrame(ctk.CTkFrame):
             tv2.insert("", "end", values=(t["name"], f"{t['qty']:g} {t['unit']}",
                                           money(t["total"])))
 
+        if near_exp:
+            warn = ctk.CTkFrame(self, corner_radius=10, border_width=1,
+                                border_color="#b3261e")
+            warn.pack(fill="x", pady=6, padx=2)
+            ctk.CTkLabel(warn, text="\u26a0 Near expiry \u2014 60 days",
+                         font=ctk.CTkFont(weight="bold")).pack(
+                             anchor="w", padx=10, pady=(6, 0))
+            fr3, tv3 = tree(warn, ("Product", "Expiry", "Stock"),
+                            widths=(260, 120, 90), height=5)
+            fr3.pack(fill="x", padx=10, pady=(4, 10))
+            for p in near_exp[:8]:
+                tag = "expired" if (p["expiry"] or "") < today_iso() else ""
+                tv3.insert("", "end", values=(
+                    p["name"], p["expiry"], f"{p['stock']:g} {p['unit']}"),
+                    tags=(tag,) if tag else ())
+            tv3.tag_configure("expired", foreground="#b3261e")
+
         ctk.CTkButton(self, text="New bill (F2)",
                       command=lambda: app.show("billing")).pack(
                           anchor="w", pady=6)
@@ -368,8 +417,16 @@ UNITS = ["pcs", "kg", "g", "bag", "box", "litre", "packet", "dozen"]
 
 
 class ProductsFrame(ctk.CTkFrame):
-    COLS = ("ID", "Name", "SKU", "Purchase", "Wholesale", "Retail",
-            "Unit", "GST%", "Stock", "Supplier")
+    COLS = ("ID", "Name", "SKU", "Purchase", "Wholesale", "Retail", "MRP",
+            "Company", "Margin%", "Unit", "GST%", "Stock", "Supplier")
+
+    @staticmethod
+    def margin_pct(p):
+        cp = float(p.get("purchase_price") or 0)
+        wp = float(p.get("wholesale_price") or 0)
+        if cp <= 0:
+            return "-"
+        return f"{(wp - cp) / cp * 100:.1f}%"
 
     def __init__(self, parent, db, app):
         super().__init__(parent, fg_color="transparent")
@@ -400,7 +457,8 @@ class ProductsFrame(ctk.CTkFrame):
             side="right", padx=4)
 
         fr, self.tv = tree(self, self.COLS,
-                            widths=(40, 220, 110, 80, 80, 80, 55, 55, 70, 130),
+                            widths=(40, 200, 100, 75, 75, 75, 75, 110, 65,
+                                    50, 50, 65, 110),
                             height=22)
         fr.pack(fill="both", expand=True, pady=6)
         self.tv.bind("<Double-1>", lambda e: self.edit_dialog())
@@ -413,6 +471,8 @@ class ProductsFrame(ctk.CTkFrame):
             self.tv.insert("", "end", iid=p["id"], values=(
                 p["id"], p["name"], p["sku"], money(p["purchase_price"]),
                 money(p["wholesale_price"]), money(p["retail_price"]),
+                money(p.get("mrp") or 0), p.get("company") or "",
+                self.margin_pct(p),
                 p["unit"], f"{p['gst_percent']:g}",
                 f"{p['stock']:g}", p["supplier"]))
 
@@ -444,6 +504,8 @@ class ProductsFrame(ctk.CTkFrame):
         row("Purchase price (\u20b9)", "purchase_price", "0")
         row("Wholesale price (\u20b9)", "wholesale_price", "0")
         row("Retail price (\u20b9)", "retail_price", "0")
+        row("MRP (\u20b9)", "mrp", "0")
+        row("Company / manufacturer", "company")
         ctk.CTkLabel(win, text="Unit").pack(anchor="w", padx=14, pady=(8, 0))
         unit = ctk.CTkOptionMenu(win, values=UNITS)
         unit.set(p.get("unit", "pcs") or "pcs")
@@ -461,11 +523,13 @@ class ProductsFrame(ctk.CTkFrame):
                 return
             try:
                 for k in ("purchase_price", "wholesale_price", "retail_price",
-                          "gst_percent", "stock", "low_stock_threshold"):
+                          "mrp", "gst_percent", "stock",
+                          "low_stock_threshold"):
                     float(entries[k].get() or 0)
             except ValueError:
                 messagebox.showerror("Products",
-                                     "Prices, GST, stock and threshold must be numbers.")
+                                     "Prices, MRP, GST, stock and threshold "
+                                     "must be numbers.")
                 return
             result.update({
                 "name": entries["name"].get().strip(),
@@ -473,6 +537,8 @@ class ProductsFrame(ctk.CTkFrame):
                 "purchase_price": float(entries["purchase_price"].get() or 0),
                 "wholesale_price": float(entries["wholesale_price"].get() or 0),
                 "retail_price": float(entries["retail_price"].get() or 0),
+                "mrp": float(entries["mrp"].get() or 0),
+                "company": entries["company"].get().strip(),
                 "unit": unit.get(),
                 "gst_percent": float(entries["gst_percent"].get() or 0),
                 "stock": float(entries["stock"].get() or 0),
@@ -541,6 +607,8 @@ class ProductsFrame(ctk.CTkFrame):
                     purchase_price=num("purchase_price"),
                     wholesale_price=num("wholesale_price"),
                     retail_price=num("retail_price"),
+                    mrp=num("mrp"),
+                    company=(row.get("company") or "").strip(),
                     unit=(row.get("unit") or "pcs").strip(),
                     gst_percent=num("gst_percent"),
                     stock=num("stock"), low_stock_threshold=num(
@@ -559,8 +627,8 @@ class ProductsFrame(ctk.CTkFrame):
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["name", "sku", "purchase_price", "wholesale_price",
-                        "retail_price", "unit", "gst_percent", "stock",
-                        "low_stock_threshold", "supplier"])
+                        "retail_price", "mrp", "company", "unit", "gst_percent",
+                        "stock", "low_stock_threshold", "supplier"])
             for p in self.db.list_products():
                 w.writerow([p["name"], p["sku"], p["purchase_price"],
                             p["wholesale_price"], p["retail_price"], p["unit"],
@@ -602,8 +670,10 @@ class StockFrame(ctk.CTkFrame):
 
         fr, self.tv = tree(tabs.tab("Current stock"),
                            ("Product", "SKU", "Stock", "Unit",
-                            "Purchase price", "Value", "Supplier"),
-                           widths=(220, 110, 80, 60, 100, 110, 140), height=16)
+                            "Purchase price", "Value", "Earliest expiry",
+                            "Supplier"),
+                           widths=(200, 100, 80, 55, 95, 100, 105, 120),
+                           height=16)
         fr.pack(fill="both", expand=True, padx=8, pady=8)
 
         fr2, self.tv2 = tree(tabs.tab("Movement log"),
@@ -616,10 +686,11 @@ class StockFrame(ctk.CTkFrame):
         for r in self.tv.get_children():
             self.tv.delete(r)
         for p in self.db.list_products():
+            exp = self.db.product_earliest_expiry(p["id"]) or "-"
             self.tv.insert("", "end", values=(
                 p["name"], p["sku"], f"{p['stock']:g} {p['unit']}", p["unit"],
                 money(p["purchase_price"]),
-                money(p["purchase_price"] * p["stock"]), p["supplier"]))
+                money(p["purchase_price"] * p["stock"]), exp, p["supplier"]))
         for r in self.tv2.get_children():
             self.tv2.delete(r)
         for m in self.db.stock_movements(limit=200):
@@ -948,10 +1019,12 @@ class BillingFrame(ctk.CTkFrame):
             price = (p["wholesale_price"] if tab.price_mode == "wholesale"
                      else p["retail_price"])
             sku = p["sku"] or "\u2014"
+            mrp = f"  \u00b7 MRP {money(p.get('mrp') or 0)}" \
+                if (p.get("mrp") or 0) > 0 else ""
             b = ctk.CTkButton(
                 suggest,
                 text=f"{p['name']}  \u00b7 {sku}  \u00b7 "
-                     f"{money(price)}/{p['unit']}",
+                     f"{money(price)}/{p['unit']}{mrp}",
                 anchor="w", fg_color="transparent",
                 text_color=("black", "white"),
                 hover_color=("gray75", "gray25"),
@@ -2410,6 +2483,8 @@ class InvoicesFrame(ctk.CTkFrame):
         ctk.CTkButton(btns, text="WhatsApp", fg_color="#1f6f43",
                       hover_color="#175733",
                       command=self.whatsapp_share).pack(side="left", padx=4)
+        ctk.CTkButton(btns, text="New challan",
+                      command=self.new_challan).pack(side="left", padx=4)
         ctk.CTkButton(btns, text="Delete bill", fg_color="#b3261e",
                       hover_color="#8f1d17",
                       command=self.delete_bill).pack(side="right", padx=4)
@@ -2437,6 +2512,10 @@ class InvoicesFrame(ctk.CTkFrame):
             messagebox.showinfo("Invoices", "Select a bill first.")
             return None
         return int(sel[0])
+
+    def new_challan(self):
+        from shop_ui import ChallanDialog
+        ChallanDialog(self, self.db, on_done=lambda cid: None)
 
     def reprint(self):
         bid = self.selected_id()
