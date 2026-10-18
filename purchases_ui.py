@@ -100,6 +100,10 @@ class PurchasesFrame(ctk.CTkFrame):
         ctk.CTkLabel(r2, text="GST %").pack(side="left", padx=(8, 2))
         self.gst_e = ctk.CTkEntry(r2, width=60)
         self.gst_e.pack(side="left", padx=4)
+        ctk.CTkLabel(r2, text="Expiry").pack(side="left", padx=(8, 2))
+        self.exp_e = ctk.CTkEntry(r2, width=100,
+                                  placeholder_text="YYYY-MM-DD")
+        self.exp_e.pack(side="left", padx=4)
         ctk.CTkButton(r2, text="Add item",
                       command=self.add_item).pack(side="left", padx=10)
         ctk.CTkLabel(
@@ -110,8 +114,8 @@ class PurchasesFrame(ctk.CTkFrame):
             wraplength=300, justify="left").pack(side="left", padx=10)
 
         fr, self.tv = _tree(self, ("Product", "Qty", "Cost/unit", "GST%",
-                                   "Amount"),
-                             widths=(240, 80, 100, 60, 120), height=7)
+                                   "Expiry", "Amount"),
+                             widths=(200, 80, 100, 60, 100, 120), height=7)
         fr.pack(fill="x", pady=4)
         self.tv.bind("<Double-1>", lambda e: self.remove_item())
 
@@ -213,6 +217,16 @@ class PurchasesFrame(ctk.CTkFrame):
             messagebox.showerror("Purchase", "Choose a product first.")
             return
         p = self.picked
+        expiry = self.exp_e.get().strip()
+        if expiry:
+            from datetime import date as _date
+            try:
+                _date.fromisoformat(expiry)
+            except ValueError:
+                messagebox.showerror(
+                    "Purchase",
+                    "Expiry must be YYYY-MM-DD (or left blank).")
+                return
         try:
             qty = float(self.qty_e.get())
             cost = float(self.cost_e.get())
@@ -225,19 +239,22 @@ class PurchasesFrame(ctk.CTkFrame):
             return
         for it in self.items:
             if it["product_id"] == p["id"] and it["cost"] == cost \
-                    and it["gst_percent"] == gst:
+                    and it["gst_percent"] == gst \
+                    and it.get("expiry_date") == expiry:
                 it["qty"] += qty
                 break
         else:
             self.items.append({
                 "product_id": p["id"], "name": p["name"], "unit": p["unit"],
-                "qty": qty, "cost": cost, "gst_percent": gst})
+                "qty": qty, "cost": cost, "gst_percent": gst,
+                "expiry_date": expiry})
         self.picked = None
         self.prod_btn.configure(text="Choose product...")
         self.qty_e.delete(0, "end")
         self.qty_e.insert(0, "1")
         self.cost_e.delete(0, "end")
         self.gst_e.delete(0, "end")
+        self.exp_e.delete(0, "end")
         self.refresh_items()
 
     def remove_item(self):
@@ -256,7 +273,8 @@ class PurchasesFrame(ctk.CTkFrame):
             total += amt
             self.tv.insert("", "end", iid=str(i), values=(
                 it["name"], f"{it['qty']:g} {it['unit']}",
-                money(it["cost"]), f"{it['gst_percent']:g}%", money(amt)))
+                money(it["cost"]), f"{it['gst_percent']:g}%",
+                it.get("expiry_date") or "-", money(amt)))
         self.tot_lbl.configure(text=f"Total: {money(total)}")
 
     # -- save / list ----------------------------------------------------
@@ -317,14 +335,15 @@ class PurchasesFrame(ctk.CTkFrame):
                  f"Ref: {p['ref_no'] or '-'}",
             font=ctk.CTkFont(size=14, weight="bold")).pack(
                 anchor="w", padx=12, pady=8)
-        fr, tv = _tree(win, ("Product", "Qty", "Cost/unit", "GST%", "Amount"),
-                       widths=(220, 70, 90, 55, 110), height=12)
+        fr, tv = _tree(win, ("Product", "Qty", "Cost/unit", "GST%", "Expiry",
+                               "Amount"),
+                       widths=(190, 70, 90, 55, 100, 110), height=12)
         fr.pack(fill="both", expand=True, padx=12, pady=4)
         for it in self.db.purchase_items(pid):
             tv.insert("", "end", values=(
                 it["name"], f"{it['qty']:g} {it['unit']}",
                 money(it["cost"]), f"{it['gst_percent']:g}%",
-                money(it["line_total"])))
+                it.get("expiry_date") or "-", money(it["line_total"])))
         ctk.CTkLabel(win, text=f"Grand total: {money(p['grand_total'])}",
                      font=ctk.CTkFont(size=15, weight="bold")).pack(
                          anchor="w", padx=12, pady=8)

@@ -16,7 +16,7 @@ Tables:
 import sqlite3
 import sys
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 
@@ -191,6 +191,49 @@ CREATE TABLE IF NOT EXISTS return_items (
     line_total    REAL NOT NULL,
     FOREIGN KEY (return_id) REFERENCES returns(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS cashbook (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    date        TEXT NOT NULL,              -- YYYY-MM-DD
+    kind        TEXT NOT NULL,              -- 'in' / 'out'
+    description TEXT NOT NULL,
+    category    TEXT DEFAULT 'General',
+    amount      REAL NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS challans (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    challan_no       TEXT NOT NULL UNIQUE,
+    date             TEXT NOT NULL,          -- YYYY-MM-DD
+    customer_id      INTEGER,
+    note             TEXT DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'open',  -- open / converted
+    converted_bill_id INTEGER,
+    created_at       TEXT NOT NULL,
+    FOREIGN KEY (customer_id) REFERENCES customers(id)
+);
+
+CREATE TABLE IF NOT EXISTS challan_items (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    challan_id INTEGER NOT NULL,
+    product_id INTEGER,
+    name       TEXT NOT NULL,
+    qty        REAL NOT NULL,
+    unit       TEXT NOT NULL DEFAULT 'pcs',
+    price      REAL NOT NULL DEFAULT 0,      -- rate quoted (no GST on challan)
+    FOREIGN KEY (challan_id) REFERENCES challans(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS supplier_payments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id INTEGER NOT NULL,
+    amount      REAL NOT NULL,
+    date        TEXT NOT NULL,
+    mode        TEXT DEFAULT 'Cash',         -- Cash / UPI / Bank
+    note        TEXT DEFAULT '',
+    FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+);
 """
 
 DEFAULT_SETTINGS = {
@@ -235,6 +278,10 @@ DEFAULT_SETTINGS = {
     "bill_counter": "1",
     # Credit-note numbering (sales returns)
     "credit_note_counter": "1",
+    # Delivery challan numbering
+    "challan_counter": "1",
+    # Cash book opening balance (cash in hand at day zero)
+    "cash_opening_balance": "0",
     # Theme
     "theme": "dark",
 }
@@ -265,6 +312,21 @@ class DB:
             if "mode" not in cols:
                 self.conn.execute(
                     "ALTER TABLE payments ADD COLUMN mode TEXT DEFAULT 'Cash'")
+            pcols = [r["name"] for r in
+                     self.conn.execute("PRAGMA table_info(products)").fetchall()]
+            if "mrp" not in pcols:
+                self.conn.execute(
+                    "ALTER TABLE products ADD COLUMN mrp REAL NOT NULL DEFAULT 0")
+            if "company" not in pcols:
+                self.conn.execute(
+                    "ALTER TABLE products ADD COLUMN company TEXT DEFAULT ''")
+            picols = [r["name"] for r in
+                      self.conn.execute("PRAGMA table_info(purchase_items)"
+                                        ).fetchall()]
+            if "expiry_date" not in picols:
+                self.conn.execute(
+                    "ALTER TABLE purchase_items ADD COLUMN expiry_date TEXT "
+                    "DEFAULT ''")
             self.conn.commit()
         except Exception:
             pass
@@ -353,8 +415,9 @@ class DB:
     def add_product(self, **kw):
         cols = ("name", "sku", "purchase_price", "wholesale_price",
                 "retail_price", "unit", "gst_percent", "stock",
-                "low_stock_threshold", "supplier")
-        vals = [kw.get(c, 0 if c not in ("name", "sku", "unit", "supplier") else
+                "low_stock_threshold", "supplier", "mrp", "company")
+        str_cols = ("name", "sku", "unit", "supplier", "company")
+        vals = [kw.get(c, 0 if c not in str_cols else
                        ("" if c != "unit" else "pcs")) for c in cols]
         cur = self.conn.execute(
             f"INSERT INTO products ({', '.join(cols)}) VALUES "
@@ -368,7 +431,7 @@ class DB:
     def update_product(self, pid, **kw):
         allowed = ("name", "sku", "purchase_price", "wholesale_price",
                    "retail_price", "unit", "gst_percent", "stock",
-                   "low_stock_threshold", "supplier")
+                   "low_stock_threshold", "supplier", "mrp", "company")
         sets = [f"{c}=?" for c in allowed if c in kw]
         if sets:
             self.conn.execute(
@@ -740,10 +803,11 @@ class DB:
             line_total = round(q * c * (1 + gst / 100.0), 2)
             self.conn.execute(
                 "INSERT INTO purchase_items (purchase_id, product_id, name, "
-                "qty, unit, cost, gst_percent, line_total) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "qty, unit, cost, gst_percent, line_total, expiry_date) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (pid, it.get("product_id"), it["name"], q,
-                 it.get("unit", "pcs"), c, gst, line_total))
+                 it.get("unit", "pcs"), c, gst, line_total,
+                 (it.get("expiry_date") or "").strip()))
             if it.get("product_id"):
                 p = self.get_product(it["product_id"])
                 old_stock = float(p["stock"])
@@ -884,6 +948,242 @@ class DB:
     def return_items(self, rid):
         return self._rows("SELECT * FROM return_items WHERE return_id=? "
                           "ORDER BY id", (rid,))
+
+    # -- cash book (day book: non-bill cash movement) ------------------------
+    def add_cash_entry(self, date_str, kind, description, category, amount):
+        """Record a cash IN or OUT entry. Bills are NOT recorded here —
+        the cash book tracks non-bill cash movement only (expenses, owner
+        drawings, salary, rent, ...), so nothing is double counted."""
+        amt = float(amount)
+        if amt <= 0:
+            raise ValueError("Amount must be greater than 0.")
+        if kind not in ("in", "out"):
+            raise ValueError("kind must be 'in' or 'out'.")
+        if not (description or "").strip():
+            raise ValueError("Description is required.")
+        cur = self.conn.execute(
+            "INSERT INTO cashbook (date, kind, description, category, amount,"
+            " created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (date_str, kind, description.strip(), category or "General", amt,
+             datetime.now().strftime("%Y-%m-%d %H:%M")))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_cash_entries(self, limit=500):
+        return self._rows("SELECT * FROM cashbook ORDER BY date DESC, id DESC "
+                          "LIMIT ?", (limit,))
+
+    def delete_cash_entry(self, eid):
+        self.conn.execute("DELETE FROM cashbook WHERE id=?", (eid,))
+        self.conn.commit()
+
+    def cash_opening_balance(self):
+        try:
+            return float(self.get_setting("cash_opening_balance", "0") or 0)
+        except ValueError:
+            return 0.0
+
+    def set_cash_opening_balance(self, amount):
+        self.set_setting("cash_opening_balance", str(float(amount or 0)))
+
+    def cash_balance(self):
+        """Cash in hand = opening + all IN − all OUT."""
+        r = self._one("SELECT COALESCE(SUM(CASE WHEN kind='in' THEN amount "
+                      "ELSE -amount END), 0) t FROM cashbook")
+        return self.cash_opening_balance() + float(r["t"])
+
+    # -- delivery challans --------------------------------------------------
+    def next_challan_no(self):
+        n = int(self.get_setting("challan_counter", "1"))
+        self.set_setting("challan_counter", str(n + 1))
+        return f"CH-{n:04d}"
+
+    def create_challan(self, customer_id, date_str, note, items):
+        """Delivery challan: NO tax, does NOT touch stock or khata until
+        converted to a bill."""
+        if not items:
+            raise ValueError("Add at least one item.")
+        for it in items:
+            if float(it["qty"]) <= 0:
+                raise ValueError(
+                    f"Quantity must be > 0 for '{it['name']}'.")
+        cno = self.next_challan_no()
+        cur = self.conn.execute(
+            "INSERT INTO challans (challan_no, date, customer_id, note, "
+            "status, created_at) VALUES (?, ?, ?, ?, 'open', ?)",
+            (cno, date_str, customer_id, note or "",
+             datetime.now().strftime("%Y-%m-%d %H:%M")))
+        cid = cur.lastrowid
+        for it in items:
+            self.conn.execute(
+                "INSERT INTO challan_items (challan_id, product_id, name, "
+                "qty, unit, price) VALUES (?, ?, ?, ?, ?, ?)",
+                (cid, it.get("product_id"), it["name"], float(it["qty"]),
+                 it.get("unit", "pcs"), float(it.get("price", 0))))
+        self.conn.commit()
+        return cid
+
+    def list_challans(self, limit=300):
+        return self._rows(
+            "SELECT ch.*, c.name AS customer_name FROM challans ch "
+            "LEFT JOIN customers c ON c.id=ch.customer_id "
+            "ORDER BY ch.id DESC LIMIT ?", (limit,))
+
+    def get_challan(self, cid):
+        return self._one(
+            "SELECT ch.*, c.name AS customer_name, c.phone AS customer_phone,"
+            " c.address AS customer_address FROM challans ch "
+            "LEFT JOIN customers c ON c.id=ch.customer_id WHERE ch.id=?",
+            (cid,))
+
+    def challan_items(self, cid):
+        return self._rows("SELECT * FROM challan_items WHERE challan_id=? "
+                          "ORDER BY id", (cid,))
+
+    def delete_challan(self, cid):
+        self.conn.execute("DELETE FROM challans WHERE id=?", (cid,))
+        self.conn.commit()
+
+    def mark_challan_converted(self, cid, bill_id=None):
+        self.conn.execute("UPDATE challans SET status='converted', "
+                          "converted_bill_id=? WHERE id=?", (bill_id, cid))
+        self.conn.commit()
+
+    # -- supplier payments / creditor ledger --------------------------------
+    def record_supplier_payment(self, supplier_id, amount, mode="Cash",
+                                note="", pay_date=None):
+        """Payment MADE to a supplier — reduces what we owe them."""
+        amt = float(amount)
+        if amt <= 0:
+            raise ValueError("Amount must be greater than 0.")
+        outstanding = self.supplier_outstanding(supplier_id)
+        if amt - outstanding > 0.004:
+            raise ValueError(
+                f"Amount exceeds outstanding payable ({outstanding:,.2f}).")
+        cur = self.conn.execute(
+            "INSERT INTO supplier_payments (supplier_id, amount, date, mode,"
+            " note) VALUES (?, ?, ?, ?, ?)",
+            (supplier_id, amt, pay_date or date.today().isoformat(),
+             mode or "Cash", note or ""))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def supplier_payments(self, sid, limit=100):
+        return self._rows("SELECT * FROM supplier_payments WHERE supplier_id=?"
+                          " ORDER BY id DESC LIMIT ?", (sid, limit))
+
+    def supplier_outstanding(self, sid):
+        """What we owe a supplier = purchases − payments made."""
+        pur = self._one("SELECT COALESCE(SUM(grand_total), 0) t FROM purchases"
+                        " WHERE supplier_id=?", (sid,))["t"]
+        paid = self._one("SELECT COALESCE(SUM(amount), 0) t FROM "
+                         "supplier_payments WHERE supplier_id=?",
+                         (sid,))["t"]
+        return float(pur) - float(paid)
+
+    def suppliers_with_dues(self):
+        out = []
+        for s in self.list_suppliers():
+            due = self.supplier_outstanding(s["id"])
+            if due > 0.004:
+                s["outstanding"] = due
+                out.append(s)
+        out.sort(key=lambda s: -s["outstanding"])
+        return out
+
+    def total_creditors(self):
+        return sum(s["outstanding"] for s in self.suppliers_with_dues())
+
+    # -- outstanding aging (FIFO) -------------------------------------------
+    @staticmethod
+    def _bucket_idx(age_days):
+        if age_days <= 30:
+            return 0
+        if age_days <= 60:
+            return 1
+        if age_days <= 90:
+            return 2
+        if age_days <= 120:
+            return 3
+        if age_days <= 240:
+            return 4
+        return 5
+
+    @classmethod
+    def aging_buckets(cls):
+        return ["1-30", "31-60", "61-90", "91-120", "121-240", "241+"]
+
+    def _age_days(self, dstr):
+        try:
+            return (date.today() - date.fromisoformat(dstr)).days
+        except Exception:
+            return 0
+
+    def _allocate_fifo(self, docs, unpaid_total):
+        """Allocate unpaid_total across docs (oldest first) into the 6
+        age buckets. docs: list of dicts with 'date' and 'total'."""
+        buckets = [0.0] * 6
+        remaining = float(unpaid_total)
+        for d in docs:
+            if remaining <= 0.004:
+                break
+            alloc = min(float(d["total"]), remaining)
+            remaining -= alloc
+            buckets[self._bucket_idx(self._age_days(d["date"]))] += alloc
+        if remaining > 0.004:
+            # Rounding residue with no bill left to attach it to.
+            buckets[5] += remaining
+        return [round(b, 2) for b in buckets]
+
+    def customer_aging(self):
+        """Per-customer dues bucketed by age of the originating credit bill.
+        FIFO assumption: payments and credit notes settle the oldest bills
+        first. Only credit bills create dues, so only they are bucketed."""
+        out = []
+        for c in self.dues_list():
+            bills = self._rows(
+                "SELECT date, grand_total AS total FROM bills "
+                "WHERE customer_id=? AND payment_type='Credit' "
+                "ORDER BY date ASC, id ASC", (c["id"],))
+            buckets = self._allocate_fifo(bills, c["balance"])
+            out.append({"id": c["id"], "name": c["name"],
+                        "phone": c["phone"], "buckets": buckets,
+                        "total": round(sum(buckets), 2)})
+        return out
+
+    def supplier_aging(self):
+        """Per-supplier payables bucketed by age of the purchase bill.
+        FIFO: payments settle the oldest purchases first."""
+        out = []
+        for s in self.suppliers_with_dues():
+            docs = self._rows(
+                "SELECT date, grand_total AS total FROM purchases "
+                "WHERE supplier_id=? ORDER BY date ASC, id ASC", (s["id"],))
+            buckets = self._allocate_fifo(docs, s["outstanding"])
+            out.append({"id": s["id"], "name": s["name"],
+                        "phone": s["phone"], "buckets": buckets,
+                        "total": round(sum(buckets), 2)})
+        return out
+
+    # -- expiry tracking ------------------------------------------------------
+    def product_earliest_expiry(self, pid):
+        """Earliest upcoming expiry date across this product's purchase lots
+        (simple view — not lot-level sale matching)."""
+        r = self._one("SELECT MIN(expiry_date) d FROM purchase_items "
+                      "WHERE product_id=? AND expiry_date <> ''", (pid,))
+        return r["d"] if r else None
+
+    def near_expiry_products(self, within_days=60):
+        """Products with at least one purchase lot expiring within
+        `within_days` (or already expired)."""
+        cutoff = (date.today() + timedelta(days=within_days)).isoformat()
+        rows = self._rows(
+            "SELECT p.id, p.name, p.sku, p.unit, p.stock, "
+            "MIN(pi.expiry_date) AS expiry FROM purchase_items pi "
+            "JOIN products p ON p.id=pi.product_id "
+            "WHERE pi.expiry_date <> '' AND pi.expiry_date <= ? "
+            "GROUP BY p.id ORDER BY expiry ASC", (cutoff,))
+        return rows
 
     # -- dashboard / reports ------------------------------------------------
     def sales_on(self, day):

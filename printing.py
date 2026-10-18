@@ -581,6 +581,131 @@ def generate_payment_receipt_pdf(payment, customer, profile, prefs,
     return dest_path
 
 
+def generate_challan_pdf(challan, items, profile, prefs, dest_path=None):
+    """Delivery challan PDF (no GST/tax). Honors the invoice-design shop
+    header; A4 + 80mm thermal layouts."""
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (HRFlowable, Paragraph, SimpleDocTemplate,
+                                    Spacer, Table, TableStyle)
+
+    narrow = prefs.get("paper") == "thermal"
+    accent = colors.HexColor(prefs.get("accent", "#1f6f43") or "#1f6f43")
+    dark, grey = colors.HexColor("#222222"), colors.HexColor("#777777")
+    fscale = {"compact": 0.85, "standard": 1.0,
+              "large": 1.18}.get(prefs.get("font_size", "standard"), 1.0)
+    fs = round((8 if narrow else 10) * fscale)
+    fs_title = round((13 if narrow else 20) * fscale)
+
+    def P(text, size=fs, bold=False, color=dark, align=TA_LEFT, space=2):
+        return Paragraph(text, ParagraphStyle(
+            "ch", fontName=_FONT_BOLD if bold else _FONT_NAME,
+            fontSize=size, leading=size * 1.3, textColor=color,
+            alignment=align, spaceAfter=space))
+
+    story = [P(profile.get("shop_name") or "BillBook Shop", size=fs_title,
+               bold=True, color=accent, align=TA_CENTER, space=1)]
+    if prefs.get("show_tagline", True) and profile.get("shop_tagline"):
+        story.append(P(profile["shop_tagline"], align=TA_CENTER, space=1))
+    if prefs.get("show_address", True) and profile.get("shop_address"):
+        story.append(P(profile["shop_address"], color=grey,
+                       align=TA_CENTER, space=1))
+    if prefs.get("show_phone", True) and profile.get("shop_phone"):
+        story.append(P(f"Phone: {profile['shop_phone']}", color=grey,
+                       align=TA_CENTER, space=1))
+    story.append(HRFlowable(width="100%", thickness=2.5, color=accent,
+                            spaceAfter=6, spaceBefore=4))
+    story.append(P("DELIVERY CHALLAN", size=fs + 4, bold=True, color=accent,
+                   align=TA_CENTER, space=6))
+    story.append(P("Goods sent on approval — not a tax invoice.",
+                   color=grey, align=TA_CENTER, space=6))
+
+    cust = challan.get("customer_name") or "Walk-in"
+    meta = [
+        [P(f"<b>Challan No:</b> {challan['challan_no']}"),
+         P(f"<b>Customer:</b> {cust}")],
+        [P(f"<b>Date:</b> {challan['date']}"),
+         P(f"<b>Phone:</b> {challan.get('customer_phone') or '-'}")],
+    ]
+    if challan.get("note"):
+        meta.append([P(f"<b>Note:</b> {challan['note']}"), Spacer(1, 1)])
+    story.append(Table(meta, colWidths=["50%", "50%"]))
+    story.append(Spacer(1, 8))
+
+    total_w = _usable_width(narrow)
+    if narrow:
+        colspec = [("#", 14), ("Item", None), ("Qty", 30), ("Rate", 44),
+                   ("Amount", 52)]
+    else:
+        colspec = [("#", 24), ("Item", None), ("Qty", 60), ("Rate", 70),
+                   ("Amount", 90)]
+    data = [[h for h, _ in colspec]]
+    total_qty, total_amt = 0.0, 0.0
+    for i, it in enumerate(items, 1):
+        q = float(it["qty"])
+        amt = q * float(it.get("price", 0) or 0)
+        total_qty += q
+        total_amt += amt
+        data.append([str(i), it["name"], f"{q:g} {it.get('unit', '')}",
+                     money(it.get("price", 0) or 0), money(amt)])
+    data.append(["", P("<b>Total</b>", bold=True), f"{total_qty:g}",
+                 "", P(f"<b>{money(total_amt)}</b>", bold=True,
+                       align=TA_RIGHT)])
+    fixed = sum(w for _, w in colspec if w is not None)
+    widths = [total_w - fixed if w is None else w for _, w in colspec]
+    t = Table(data, colWidths=widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), accent),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), _FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, -1), fs),
+        ("FONTNAME", (0, 1), (-1, -1), _FONT_NAME),
+        ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -2),
+         [colors.white, colors.HexColor("#f7f7f7")]),
+        ("LINEABOVE", (0, -1), (-1, -1), 1.5, accent),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 10))
+    if prefs.get("footer_note"):
+        story.append(P(prefs["footer_note"], align=TA_CENTER, color=grey,
+                       space=6))
+    if not narrow:
+        story.append(Spacer(1, 18))
+        story.append(Table(
+            [[P("Receiver signature", color=grey),
+              P(f"For {profile.get('shop_name') or 'Shop'}", color=grey,
+                align=TA_RIGHT)]],
+            colWidths=["50%", "50%"]))
+    now = datetime.now().strftime("%d-%m-%Y %I:%M %p")
+    story.append(P(f"Generated by BillBook — {now}", size=fs - 1,
+                   color=grey, align=TA_CENTER, space=2))
+
+    if dest_path is None:
+        safe = str(challan["challan_no"]).replace("/", "-")
+        dest_path = invoices_dir() / f"{safe}_challan.pdf"
+    dest_path = Path(dest_path)
+    if narrow:
+        pagesize = (80 * mm, 130 * mm + len(items) * 8 * mm)
+        margins = dict(leftMargin=2 * mm, rightMargin=2 * mm,
+                       topMargin=3 * mm, bottomMargin=3 * mm)
+    else:
+        pagesize = A4
+        margins = dict(leftMargin=12 * mm, rightMargin=12 * mm,
+                       topMargin=12 * mm, bottomMargin=12 * mm)
+    doc = SimpleDocTemplate(str(dest_path), pagesize=pagesize,
+                            title=f"Challan {challan['challan_no']}",
+                            author=profile.get("shop_name") or "BillBook",
+                            **margins)
+    doc.build(story)
+    return dest_path
+
+
 # ---------------------------------------------------------------------------
 # High-level: build + print one saved bill
 # ---------------------------------------------------------------------------
