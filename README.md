@@ -57,8 +57,24 @@ no Chrome extension needed.
     most recent bill's items into a fresh tab at **current** prices (qty as
     billed), with a note showing which bill it was loaded from. Handy for
     regular weekly orders.
+  - **Grid / Cards picker view** (Marg-ERP style) — the product picker has
+    two views, switched with the **Grid | Cards** toggle above the tabs or
+    **Ctrl+G** (choice is remembered). **Grid** is the default: a full
+    product grid with columns **DESCRIPTION | PACKING | STOCK | UNIT |
+    RATE**, a **"Find Name ? >>"** box underneath that filters the grid
+    **live as you type** (matches product name *and* SKU,
+    case-insensitive), and an item-detail footer for the highlighted row
+    showing **PurRate, M.R.P., Margin % and Company** ("—" when unknown).
+    **Up/Down** move the highlight, **Enter** picks the product into the
+    normal qty → rate → discount flow, **Esc** in the find box clears the
+    filter, **Down** in the find box jumps into the grid, and **F3** focuses
+    the find box. The grid shows the same low-stock ⚠ warnings billing
+    already uses and follows the tab's Wholesale/Retail price mode.
+    **Cards** is the original card-based line view, unchanged.
 - **Product catalog** — name, SKU/barcode, purchase / wholesale / retail
-  price, unit (pcs, kg, bag, box, litre…), GST %, stock, low-stock threshold,
+  price, unit (pcs, kg, bag, box, litre…), **pack size** (pieces per pack,
+  e.g. 12 for a dozen-box; shown as the PACKING column in the billing
+  grid), GST %, stock, low-stock threshold,
   supplier. Add/edit/delete (with validation: name required, numeric prices
   and stock; delete is blocked for products on saved bills), search,
   **bulk import/export via CSV** (`sample_products.csv` included with 14
@@ -300,6 +316,7 @@ billbook_data`. After code changes, rebuild with `docker compose build`.
 | `purchases_ui.py` | Purchases screen: supplier picker, purchase entry, purchase history |
 | `returns_ui.py` | Sales-return dialog (credit notes) + WhatsApp bill sharing |
 | `shop_ui.py` | Marg-parity screens: Cash Book (day book), delivery challans (+ challan dialog), Suppliers ledger, Outstanding aging report, Re-Order list |
+| `grid_billing.py` | Marg-style sale-entry grid for billing: DESCRIPTION/PACKING/STOCK/UNIT/RATE treeview, "Find Name ? >>" live filter, item-detail footer (PurRate/MRP/Margin%/Company); data-only panel that hands picks back to the billing flow (split out of `ui.py` to keep modules small) |
 | `backup.py` | Backup engine + Backup & restore screen: manual timestamped zips, restore with safety copy, silent auto-backup on exit with 14-backup retention |
 | `updater.py` | Self-update from GitHub: background latest-commit check, source-ZIP download + staging, `apply_update.bat` generator (copies new files excluding `billbook_data/`, rebuilds the `.exe` after exit, restarts) |
 | `version.txt` | Commit SHA of the running build — written at push/build time; the updater compares it with GitHub's latest |
@@ -402,6 +419,27 @@ product name prominent, SKU/unit muted, a plain typed quantity field (no
 +/− steppers), editable rate and line-discount fields right on the card,
 bold line total, × remove button, and the low-stock ⚠ badge when relevant.
 Clicking a card selects it (accent border); double-click opens the full line
+editor; adding a duplicate merges into the existing card and flashes it so
+the cashier sees where it went. An empty bill shows a clean "Bill is empty"
+placeholder.
+
+**Grid / Cards product picker:** the shop's previous software (Marg ERP)
+shows products in a grid — DESCRIPTION | PACKING | STOCK | UNIT | RATE —
+with a "Find Name ? >>" type-to-filter box, so the billing screen offers
+that same view alongside the original cards. The grid is a separate module
+(`grid_billing.py`) on purpose: it's a data-only panel (treeview + find box
++ detail footer) that hands the picked product back to the existing billing
+flow via `on_add`, so the qty → rate → discount chain, line merging,
+low-stock checks and shortcuts are shared, not duplicated. PACKING comes
+from the new `pack_size` column on products (pieces per pack, default 1,
+migrated additively like mrp/company before it); RATE follows the tab's
+Wholesale/Retail mode; the find box filters on name *and* SKU
+case-insensitively and selects the first match Marg-style; the footer reads
+PurRate/MRP/Margin%/Company from columns that already existed. View choice
+is a per-tab state with a frame-level toggle + Ctrl+G, persisted in
+settings. The trade-off: two picker UIs to maintain instead of one — kept
+because the user explicitly asked for the Marg-style grid, and the cards
+view stays for anyone who prefers it.
 editor; adding a duplicate merges into the existing card and flashes it so
 the cashier sees where it went. An empty bill shows a clean "Bill is empty"
 placeholder.
