@@ -73,11 +73,12 @@ class GridPanel(ctk.CTkFrame):
                      font=ctk.CTkFont(weight="bold")).pack(side="left",
                                                            padx=(2, 6))
         self.find_e = ctk.CTkEntry(find, width=280,
-                                   placeholder_text="type to filter "
-                                                    "name or SKU...")
+                                   placeholder_text="type product name "
+                                                    "to list matches...")
         self.find_e.pack(side="left")
         self.find_e.bind("<KeyRelease>", self._on_find_key)
-        ctk.CTkLabel(find, text="(arrows move \u00b7 Enter picks)",
+        ctk.CTkLabel(find, text="(grid starts empty \u00b7 arrows move \u00b7 "
+                                "Enter picks)",
                      text_color="gray").pack(side="left", padx=8)
 
         self.detail = ctk.CTkLabel(
@@ -181,7 +182,7 @@ class GridPanel(ctk.CTkFrame):
                            if q in (p.get("name") or "").lower()
                            or q in (p.get("sku") or "").lower()]
         else:
-            self._shown = list(self._products)
+            self._shown = []
         self._render()
 
     def focus_find(self):

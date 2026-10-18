@@ -59,12 +59,13 @@ no Chrome extension needed.
     regular weekly orders.
   - **Grid / Cards picker view** (Marg-ERP style) — the product picker has
     two views, switched with the **Grid | Cards** toggle above the tabs or
-    **Ctrl+G** (choice is remembered). **Grid** is the default: a full
-    product grid with columns **DESCRIPTION | PACKING | STOCK | UNIT |
-    RATE**, a **"Find Name ? >>"** box underneath that filters the grid
-    **live as you type** (matches product name *and* SKU,
-    case-insensitive), and an item-detail footer for the highlighted row
-    showing **PurRate, M.R.P., Margin % and Company** ("—" when unknown).
+    **Ctrl+G** (choice is remembered). **Grid** is the default: the product
+    grid starts **empty** — the list appears only once you start typing in
+    the **"Find Name ? >>"** box underneath (matches product name *and*
+    SKU, case-insensitive), and clears back to empty when the find box is
+    cleared. Columns **DESCRIPTION | PACKING | STOCK | UNIT | RATE**, and an
+    item-detail footer for the highlighted row showing **PurRate, M.R.P.,
+    Margin % and Company** ("—" when unknown).
     **Up/Down** move the highlight, **Enter** picks the product into the
     normal qty → rate → discount flow, **Esc** in the find box clears the
     filter, **Down** in the find box jumps into the grid, and **F3** focuses
@@ -443,7 +444,9 @@ that same view alongside the original cards. The grid is a separate module
 (`grid_billing.py`) on purpose: it's a data-only panel (treeview + find box
 + detail footer) that hands the picked product back to the existing billing
 flow via `on_add`, so the qty → rate → discount chain, line merging,
-low-stock checks and shortcuts are shared, not duplicated. PACKING comes
+low-stock checks and shortcuts are shared, not duplicated. The grid starts
+empty by design (the user's ask — no wall of products on load) and lists
+matches only while the find box has text. PACKING comes
 from the new `pack_size` column on products (pieces per pack, default 1,
 migrated additively like mrp/company before it); RATE follows the tab's
 Wholesale/Retail mode; the find box filters on name *and* SKU
