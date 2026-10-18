@@ -454,6 +454,25 @@ class DB:
             "SELECT * FROM products WHERE stock <= low_stock_threshold "
             "ORDER BY stock ASC")
 
+    def reorder_products(self):
+        """Products that need re-ordering: stock at/below their low-stock
+        threshold, but only products that actually have a threshold set
+        (threshold > 0). Sorted by urgency (stock/threshold ascending)."""
+        rows = self._rows(
+            "SELECT * FROM products WHERE low_stock_threshold > 0 "
+            "AND stock <= low_stock_threshold")
+        rows.sort(key=lambda p: (
+            float(p["stock"]) / float(p["low_stock_threshold"])))
+        return rows
+
+    def get_supplier_by_name(self, name):
+        """Exact (case-insensitive) supplier lookup by name, or None."""
+        s = (name or "").strip()
+        if not s:
+            return None
+        return self._one("SELECT * FROM suppliers WHERE LOWER(name)=LOWER(?)",
+                         (s,))
+
     def stock_value(self):
         r = self._one("SELECT COALESCE(SUM(purchase_price * stock), 0) v "
                       "FROM products")

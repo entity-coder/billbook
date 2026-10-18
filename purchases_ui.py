@@ -277,6 +277,37 @@ class PurchasesFrame(ctk.CTkFrame):
                 it.get("expiry_date") or "-", money(amt)))
         self.tot_lbl.configure(text=f"Total: {money(total)}")
 
+    # -- re-order prefill -------------------------------------------------
+    def prefill_items(self, item_dicts):
+        """Pre-fill the entry rows from the Re-Order screen (or anywhere
+        else): list of dicts with product_id, name, unit, qty, cost,
+        gst_percent, expiry_date. Duplicate product+rate rows are merged,
+        matching the normal add-item behaviour."""
+        added = 0
+        for d in item_dicts:
+            if float(d.get("qty") or 0) <= 0:
+                continue
+            for it in self.items:
+                if it["product_id"] == d["product_id"] \
+                        and it["cost"] == float(d.get("cost") or 0) \
+                        and it.get("gst_percent") == float(
+                            d.get("gst_percent") or 0) \
+                        and it.get("expiry_date") == (d.get("expiry_date")
+                                                      or ""):
+                    it["qty"] += float(d["qty"])
+                    break
+            else:
+                self.items.append({
+                    "product_id": d["product_id"], "name": d["name"],
+                    "unit": d.get("unit") or "",
+                    "qty": float(d["qty"]),
+                    "cost": float(d.get("cost") or 0),
+                    "gst_percent": float(d.get("gst_percent") or 0),
+                    "expiry_date": d.get("expiry_date") or ""})
+            added += 1
+        self.refresh_items()
+        return added
+
     # -- save / list ----------------------------------------------------
     def save_purchase(self):
         if not self.supplier:
