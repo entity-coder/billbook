@@ -107,6 +107,7 @@ NAV = [
     ("Products", "products"),
     ("Purchases", "purchases"),
     ("Stock", "stock"),
+    ("Re-Order", "reorder"),
     ("Customers", "customers"),
     ("Suppliers", "suppliers"),
     ("Cash Book", "cashbook"),
@@ -286,6 +287,9 @@ class App(ctk.CTk):
         elif key == "aging":
             from shop_ui import AgingFrame
             screen_cls = AgingFrame
+        elif key == "reorder":
+            from shop_ui import ReOrderFrame
+            screen_cls = ReOrderFrame
         else:
             screen_cls = {"dashboard": DashboardFrame, "billing": BillingFrame,
                           "products": ProductsFrame, "stock": StockFrame,
