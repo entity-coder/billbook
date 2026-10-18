@@ -337,8 +337,6 @@ class DashboardFrame(ctk.CTkFrame):
         week_ago = (date.today() - timedelta(days=7)).isoformat()
         top = db.top_products(week_ago, today_iso(), limit=8)
         near_exp = db.near_expiry_products(60)
-
-        # Today-at-a-glance strip (Marg-style summary row), all live from db.
         cards = ctk.CTkFrame(self, fg_color="transparent")
         cards.pack(fill="x", pady=6)
         glance = [
@@ -797,6 +795,8 @@ class BillingFrame(ctk.CTkFrame):
 
         self.f_card_name = ctk.CTkFont(size=15, weight="bold")
         self.f_card_total = ctk.CTkFont(size=16, weight="bold")
+        self.f_card_name_sm = ctk.CTkFont(size=13, weight="bold")
+        self.f_card_total_sm = ctk.CTkFont(size=14, weight="bold")
         self.f_muted = ctk.CTkFont(size=12)
         self.f_grand = ctk.CTkFont(size=24, weight="bold")
         self.CARD_BG = ("gray94", "gray16")
@@ -1014,13 +1014,17 @@ class BillingFrame(ctk.CTkFrame):
         if not cur:
             return
         w = cur[1]
+        if grid_billing.escape_in_find(self.app, w):
+            return
         w["prod_e"].delete(0, "end")
         w["qty_e"].delete(0, "end")
         w["qty_e"].insert(0, "1")
         w["ldisc_e"].delete(0, "end")
+        if w.get("boxes_e") is not None:
+            w["boxes_e"].delete(0, "end")
         w["picked"] = None
         self._suggest_hide(w)
-        w["prod_e"].focus_set()
+        grid_billing.focus_picker(w)
 
     def _rank_products(self, q):
         ql = q.lower()
@@ -1235,6 +1239,12 @@ class BillingFrame(ctk.CTkFrame):
         qty_e = ctk.CTkEntry(r2, width=80)
         qty_e.insert(0, "1")
         qty_e.pack(side="left", padx=4)
+        boxes_lbl = ctk.CTkLabel(r2, text="Boxes")
+        boxes_lbl.pack(side="left", padx=(6, 2))
+        boxes_e = ctk.CTkEntry(r2, width=60,
+                               placeholder_text="boxes")
+        boxes_e.pack(side="left", padx=4)
+        boxes_e.bind("<Return>", lambda e: self.add_line(tab, w))
         ctk.CTkLabel(r2, text="Line disc. \u20b9").pack(side="left", padx=(6, 2))
         ldisc_e = ctk.CTkEntry(r2, width=80)
         ldisc_e.pack(side="left", padx=4)
@@ -1360,7 +1370,8 @@ class BillingFrame(ctk.CTkFrame):
 
         w.update({"cust_btn": cust_btn, "pay_var": pay_var,
                   "mode_var": mode_var, "disc_e": disc_e, "prod_e": prod_e,
-                  "qty_e": qty_e, "ldisc_e": ldisc_e, "cards_sf": cards_sf,
+                  "qty_e": qty_e, "boxes_lbl": boxes_lbl, "boxes_e": boxes_e,
+                  "ldisc_e": ldisc_e, "cards_sf": cards_sf,
                   "repeat_note": repeat_note,
                   "card_sel": None, "card_widgets": [], "card_fields": {},
                   "tot_lbl": tot_lbl, "warn_lbl": warn_lbl,
@@ -1451,13 +1462,17 @@ class BillingFrame(ctk.CTkFrame):
             messagebox.showerror("Billing",
                                  f"No product found for '{name}'.")
             return
-        try:
-            qty = float(w["qty_e"].get())
-            assert qty > 0
-        except (ValueError, AssertionError):
-            messagebox.showerror("Billing", "Enter a valid quantity.")
-            w["qty_e"].focus_set()
-            return
+        bq = grid_billing.boxes_qty(w, p)
+        if bq is not None:
+            qty = bq
+        else:
+            try:
+                qty = float(w["qty_e"].get())
+                assert qty > 0
+            except (ValueError, AssertionError):
+                messagebox.showerror("Billing", "Enter a valid quantity.")
+                w["qty_e"].focus_set()
+                return
         if qty > p["stock"] and not messagebox.askyesno(
                 "Billing",
                 f"Only {p['stock']:g} {p['unit']} of '{p['name']}' in stock. "
@@ -1485,10 +1500,12 @@ class BillingFrame(ctk.CTkFrame):
         w["qty_e"].delete(0, "end")
         w["qty_e"].insert(0, "1")
         w["ldisc_e"].delete(0, "end")
+        if w.get("boxes_e") is not None:
+            w["boxes_e"].delete(0, "end")
         w["picked"] = None
         self._suggest_hide(w)
         self._refresh_totals(tab.name, flash_idx=merged_idx)
-        w["prod_e"].focus_set()
+        grid_billing.focus_picker(w)
 
     def edit_line(self, tab, w):
         idx = w.get("card_sel")
@@ -1572,7 +1589,7 @@ class BillingFrame(ctk.CTkFrame):
         else:
             for idx, it in enumerate(tab.items):
                 card = self._build_card(tab, w, idx, it)
-                card.pack(fill="x", padx=6, pady=5)
+                card.pack(fill="x", padx=8, pady=3)
                 cards.append(card)
             sel = w.get("card_sel")
             if sel is not None and sel < len(cards):
@@ -1580,72 +1597,67 @@ class BillingFrame(ctk.CTkFrame):
             else:
                 w["card_sel"] = None
         w["card_widgets"] = cards
+        gp = w.get("grid_panel")
+        if gp is not None:
+            gp.set_lines(tab.items, w.get("card_sel"))
         if flash_idx is not None and 0 <= flash_idx < len(cards):
             self._flash_card(w, flash_idx)
 
     def _build_card(self, tab, w, idx, it):
         sf = w["cards_sf"]
-        card = ctk.CTkFrame(sf, corner_radius=12, border_width=1,
+        card = ctk.CTkFrame(sf, corner_radius=8, border_width=1,
                             fg_color=self.CARD_BG,
                             border_color=self.CARD_BORDER)
 
-        top = ctk.CTkFrame(card, fg_color="transparent")
-        top.pack(fill="x", padx=14, pady=(12, 2))
-        name = ctk.CTkLabel(top, text=it["name"], font=self.f_card_name,
-                            anchor="w")
+        r1 = ctk.CTkFrame(card, fg_color="transparent")
+        r1.pack(fill="x", padx=8, pady=(6, 1))
+        name = ctk.CTkLabel(r1, text=it["name"],
+                            font=self.f_card_name_sm, anchor="w")
         name.pack(side="left")
         warn_badge = None
         if self._low_stock(it):
-            warn_badge = ctk.CTkLabel(top, text="\u26a0 low stock",
-                                      text_color=self.DANGER,
-                                      font=ctk.CTkFont(size=12, weight="bold"))
-            warn_badge.pack(side="left", padx=8)
-        rm = ctk.CTkButton(top, text="\u2715", width=30, height=28,
+            warn_badge = ctk.CTkLabel(
+                r1, text="\u26a0 low stock", text_color=self.DANGER,
+                font=ctk.CTkFont(size=11, weight="bold"))
+            warn_badge.pack(side="left", padx=6)
+        rm = ctk.CTkButton(r1, text="\u2715", width=26, height=24,
                            fg_color="transparent",
                            text_color=(self.DANGER, "#e57373"),
                            hover_color=("gray80", "gray25"),
                            command=lambda: self.remove_line_idx(tab, w, idx))
         rm.pack(side="right")
-
-        mid = ctk.CTkFrame(card, fg_color="transparent")
-        mid.pack(fill="x", padx=14, pady=(0, 2))
-        sku_txt = f"SKU: {it['sku']}" if it.get("sku") else "SKU: \u2014"
-        ctk.CTkLabel(mid, text=f"{sku_txt}  \u00b7  {it['unit']}",
-                     text_color="gray", font=self.f_muted).pack(side="left")
-        total_lbl = ctk.CTkLabel(mid, text=money(self._line_amount(it)),
-                                 font=self.f_card_total,
+        total_lbl = ctk.CTkLabel(r1, text=money(self._line_amount(it)),
+                                 font=self.f_card_total_sm,
                                  text_color=self.ACCENT_TEXT)
-        total_lbl.pack(side="right")
+        total_lbl.pack(side="right", padx=(0, 6))
 
-        bot = ctk.CTkFrame(card, fg_color="transparent")
-        bot.pack(fill="x", padx=14, pady=(4, 12))
-
-        ctk.CTkLabel(bot, text="Qty", text_color="gray",
+        r2 = ctk.CTkFrame(card, fg_color="transparent")
+        r2.pack(fill="x", padx=8, pady=(0, 6))
+        ctk.CTkLabel(r2, text="Qty", text_color="gray",
                      font=self.f_muted).pack(side="left", padx=(0, 2))
-        qty_e = ctk.CTkEntry(bot, width=80)
+        qty_e = ctk.CTkEntry(r2, width=64)
         qty_e.insert(0, f"{it['qty']:g}")
         qty_e.pack(side="left")
-        ctk.CTkLabel(bot, text=it["unit"], text_color="gray",
+        ctk.CTkLabel(r2, text=it["unit"], text_color="gray",
                      font=self.f_muted).pack(side="left", padx=4)
-
-        ctk.CTkLabel(bot, text="Rate \u20b9", text_color="gray",
-                     font=self.f_muted).pack(side="left", padx=(10, 2))
-        rate_e = ctk.CTkEntry(bot, width=90)
+        ctk.CTkLabel(r2, text="Rate \u20b9", text_color="gray",
+                     font=self.f_muted).pack(side="left", padx=(8, 2))
+        rate_e = ctk.CTkEntry(r2, width=80)
         rate_e.insert(0, f"{it['price']:g}")
         rate_e.pack(side="left")
-        ctk.CTkLabel(bot, text="Disc \u20b9", text_color="gray",
-                     font=self.f_muted).pack(side="left", padx=(10, 2))
-        disc_e = ctk.CTkEntry(bot, width=70)
+        ctk.CTkLabel(r2, text="Disc \u20b9", text_color="gray",
+                     font=self.f_muted).pack(side="left", padx=(8, 2))
+        disc_e = ctk.CTkEntry(r2, width=64)
         if it["line_discount"]:
             disc_e.insert(0, f"{it['line_discount']:g}")
         disc_e.pack(side="left")
-        ctk.CTkLabel(bot, text=f"GST {it['gst_percent']:g}%",
+        ctk.CTkLabel(r2, text=f"GST {it['gst_percent']:g}%",
                      text_color="gray", font=self.f_muted).pack(
-                         side="left", padx=10)
+                         side="left", padx=8)
 
         w["card_fields"][idx] = {"qty": qty_e, "rate": rate_e,
                                  "disc": disc_e, "total": total_lbl,
-                                 "top": top, "warn": warn_badge}
+                                 "top": r1, "warn": warn_badge}
         for e in (qty_e, rate_e, disc_e):
             e._orig_bw = e.cget("border_width")
             e._orig_bc = e.cget("border_color")
@@ -1765,6 +1777,11 @@ class BillingFrame(ctk.CTkFrame):
                 e.select_range(0, "end")
         except Exception:
             pass
+
+    def _select_line(self, tab, w, idx):
+        """Bill-lines table (grid view) row selected: sync card selection."""
+        w["card_sel"] = idx
+        self._select_card(tab, w, idx)
 
     def _select_card(self, tab, w, idx):
         w["card_sel"] = idx
