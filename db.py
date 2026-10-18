@@ -320,6 +320,10 @@ class DB:
             if "company" not in pcols:
                 self.conn.execute(
                     "ALTER TABLE products ADD COLUMN company TEXT DEFAULT ''")
+            if "pack_size" not in pcols:
+                self.conn.execute(
+                    "ALTER TABLE products ADD COLUMN pack_size INTEGER "
+                    "NOT NULL DEFAULT 1")
             picols = [r["name"] for r in
                       self.conn.execute("PRAGMA table_info(purchase_items)"
                                         ).fetchall()]
@@ -413,9 +417,16 @@ class DB:
         return self._one("SELECT * FROM products WHERE id=?", (pid,))
 
     def add_product(self, **kw):
+        kw = dict(kw)
+        kw.setdefault("pack_size", 1)
+        try:
+            kw["pack_size"] = max(int(kw["pack_size"] or 1), 1)
+        except (TypeError, ValueError):
+            kw["pack_size"] = 1
         cols = ("name", "sku", "purchase_price", "wholesale_price",
                 "retail_price", "unit", "gst_percent", "stock",
-                "low_stock_threshold", "supplier", "mrp", "company")
+                "low_stock_threshold", "supplier", "mrp", "company",
+                "pack_size")
         str_cols = ("name", "sku", "unit", "supplier", "company")
         vals = [kw.get(c, 0 if c not in str_cols else
                        ("" if c != "unit" else "pcs")) for c in cols]
@@ -429,9 +440,16 @@ class DB:
         return pid
 
     def update_product(self, pid, **kw):
+        kw = dict(kw)
+        if "pack_size" in kw:
+            try:
+                kw["pack_size"] = max(int(kw["pack_size"] or 1), 1)
+            except (TypeError, ValueError):
+                kw["pack_size"] = 1
         allowed = ("name", "sku", "purchase_price", "wholesale_price",
                    "retail_price", "unit", "gst_percent", "stock",
-                   "low_stock_threshold", "supplier", "mrp", "company")
+                   "low_stock_threshold", "supplier", "mrp", "company",
+                   "pack_size")
         sets = [f"{c}=?" for c in allowed if c in kw]
         if sets:
             self.conn.execute(
