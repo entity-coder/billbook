@@ -118,17 +118,128 @@ def get_default_printer():
         return ""
 
 
+def print_fail_text(msg, pdf_path):
+    """User-facing text for a failed direct print.
+
+    States the reason, where the PDF was saved, and a one-line fix hint.
+    Never opens anything — the caller shows this text and lets the user
+    decide (e.g. via an "Open PDF" button).
+    """
+    if sys.platform == "win32":
+        hint = ("Check: a default printer is set in Windows Settings > "
+                "Printers, and a PDF reader is installed.")
+    else:
+        hint = ("Check: a default printer is set and a PDF viewer is "
+                "installed.")
+    return f"{msg}\n\nPDF saved at: {pdf_path}\n{hint}"
+
+
+def silent_print_pdf(pdf_path, printer=None, copies=1):
+    """Print a PDF directly WITHOUT opening any viewer window.
+
+    Windows-only. Rasterizes each page with PyMuPDF at 203 dpi (standard
+    thermal-printer resolution) and draws the bitmaps straight to the
+    printer device context via win32ui — the PDF app is never involved.
+
+    Returns (ok, message). Never raises and never opens the PDF in a
+    viewer; on any failure ok is False with a reason.
+    """
+    pdf_path = str(pdf_path)
+    if sys.platform != "win32":
+        return False, "Silent printing needs Windows."
+    try:
+        try:
+            import pymupdf as fitz  # PyMuPDF (new package name)
+        except ImportError:
+            import fitz  # PyMuPDF (legacy package name)
+        from PIL import Image, ImageWin
+        import win32print
+        import win32ui
+    except Exception as e:
+        return False, f"Silent printing unavailable ({e})."
+    copies = max(int(copies or 1), 1)
+    try:
+        printer_name = printer or win32print.GetDefaultPrinter()
+    except Exception as e:
+        return False, f"Silent print failed: no default printer ({e})."
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as e:
+        return False, f"Silent print failed: cannot read PDF ({e})."
+    try:
+        hdc = win32ui.CreateDC()
+        hdc.CreatePrinterDC(printer_name)
+        try:
+            for _ in range(copies):
+                hdc.StartDoc("BillBook")
+                try:
+                    for page in doc:
+                        pix = page.get_pixmap(dpi=203)
+                        if pix.n != 3:  # gray / CMYK -> RGB
+                            pix = fitz.Pixmap(fitz.csRGB, pix)
+                        if pix.alpha:
+                            pix = fitz.Pixmap(pix, 0)
+                        img = Image.frombytes(
+                            "RGB", [pix.width, pix.height], pix.samples)
+                        hdc.StartPage()
+                        try:
+                            pw = hdc.GetDeviceCaps(8)    # HORZRES
+                            ph = hdc.GetDeviceCaps(10)   # VERTRES
+                            iw, ih = img.size
+                            scale = min(pw / iw, ph / ih)
+                            dw, dh = int(iw * scale), int(ih * scale)
+                            ImageWin.Dib(img).draw(
+                                hdc.GetHandleOutput(), (0, 0, dw, dh))
+                        finally:
+                            hdc.EndPage()
+                finally:
+                    hdc.EndDoc()
+        finally:
+            hdc.DeleteDC()
+    except Exception as e:
+        return False, f"Silent print failed: {e}."
+    finally:
+        doc.close()
+    return True, f"Sent to printer '{printer_name}'."
+
+
 def print_pdf(pdf_path, printer=None, copies=1):
     """Send a PDF to a printer via the OS.
 
-    Returns (ok, message). On non-Windows, or when pywin32 is missing, or
-    when the OS call fails, ok is False and the caller should fall back to
-    just opening/saving the PDF — never claim the job printed.
+    Tries the silent path first (rasterize + draw to the printer DC — no
+    viewer window ever opens). If silent printing is unavailable, falls
+    back to the legacy ``os.startfile(path, "print")`` verb on Windows
+    (this hands the file to the PDF app, which may open visibly — kept as
+    an emergency backup because it does print).
+
+    Returns (ok, message). On total failure ok is False and the message
+    carries the reason, the saved PDF path, and a fix hint. This function
+    never opens the PDF itself.
+    """
+    pdf_path = str(pdf_path)
+    ok, msg = silent_print_pdf(pdf_path, printer=printer, copies=copies)
+    if ok:
+        return True, msg
+    detail = msg
+    if sys.platform == "win32":
+        ok2, msg2 = _startfile_print(pdf_path, printer=printer,
+                                     copies=copies)
+        if ok2:
+            return True, msg2
+        detail = f"{msg} Backup print also failed: {msg2}"
+    return False, print_fail_text(detail, pdf_path)
+
+
+def _startfile_print(pdf_path, printer=None, copies=1):
+    """Legacy Windows backup: ``os.startfile(path, "print")``.
+
+    Hands the file to the registered PDF app, which may open visibly.
+    Returns (ok, message).
     """
     pdf_path = str(pdf_path)
     wp = _win32print()
-    if wp is None or sys.platform != "win32":
-        return False, "Direct printing needs Windows. The PDF was saved — open it to print."
+    if wp is None:
+        return False, "pywin32 is not installed."
     copies = max(int(copies or 1), 1)
     try:
         # Temporarily make the chosen printer the default so
@@ -153,7 +264,7 @@ def print_pdf(pdf_path, printer=None, copies=1):
                     pass
         return True, f"Sent to printer '{printer or 'default'}'."
     except Exception as e:
-        return False, f"Could not print automatically ({e}). The PDF was saved — open it to print."
+        return False, f"Print command failed ({e})."
 
 
 def open_pdf(pdf_path):
@@ -864,10 +975,8 @@ def print_bill_pdf(bill_id, db_path=None, printer=None, copies=1,
         db.log_bill_action(bill_id, "reprinted",
                            f"Invoice PDF: {path.name} — {msg}")
         db.close()
-        if not ok:
-            # Printing not possible here: open the PDF so the user can
-            # print it by hand instead of losing the flow.
-            open_pdf(path)
+        # NOTE: never auto-open the PDF on print failure — the caller shows
+        # msg (reason + saved path + fix hint) and offers a manual Open.
         return path, ok, msg
     except Exception:
         db.close()

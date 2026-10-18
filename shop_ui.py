@@ -417,8 +417,12 @@ class ChallansFrame(ctk.CTkFrame):
             import printing
             pdf = printing.generate_challan_pdf(
                 ch, items, self.db.shop_profile(), self.db.print_prefs())
-            printing.open_pdf(pdf)
-            messagebox.showinfo("Challan", f"Challan PDF saved at:\n{pdf}")
+            ok, pmsg = printing.print_pdf(pdf)
+            if ok:
+                messagebox.showinfo("Challan", "Challan sent to printer.")
+            else:
+                # Never auto-open: show reason + path + fix hint.
+                messagebox.showinfo("Challan", pmsg)
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("Challan", f"Could not build the PDF: {e}")
 
@@ -842,7 +846,11 @@ class ReOrderFrame(ctk.CTkFrame):
             import printing
             pdf = printing.generate_reorder_pdf(
                 self.rows, self.db.shop_profile(), self.db.print_prefs())
-            printing.open_pdf(pdf)
-            messagebox.showinfo("Re-Order", f"Re-order list saved at:\n{pdf}")
+            ok, pmsg = printing.print_pdf(pdf)
+            if ok:
+                messagebox.showinfo("Re-Order", "Re-order list sent to printer.")
+            else:
+                # Never auto-open: show reason + path + fix hint.
+                messagebox.showinfo("Re-Order", pmsg)
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("Re-Order", f"Could not build the PDF: {e}")

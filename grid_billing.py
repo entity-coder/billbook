@@ -12,6 +12,7 @@ discount). It never touches bill state itself.
 """
 
 from tkinter import ttk
+from datetime import date
 
 import customtkinter as ctk
 
@@ -380,3 +381,101 @@ def sync_view_var(billing):
             billing.view_var.set("Grid" if v == "grid" else "Cards")
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Billing tab chrome helpers.
+#
+# These build/refresh small pieces of the billing tab (compact bill header,
+# Boxes entry, Last Bills strip) and live here — not in ui.py — so the main
+# UI module stays under the push size limit. Behavior is unchanged from the
+# previous inline code.
+# ---------------------------------------------------------------------------
+
+def bill_no_preview(db, tab):
+    """Next bill number for the header (peek — no counter side effects)."""
+    if tab.edit_bill_id:
+        try:
+            b = db.get_bill(tab.edit_bill_id)
+            return b["bill_no"] if b else ""
+        except Exception:
+            return ""
+    try:
+        n = int(db.get_setting("bill_counter", "1") or 1)
+    except ValueError:
+        n = 1
+    prefix = db.get_setting("invoice_number_prefix", "BB-") or "BB-"
+    return f"{prefix}{n:04d}"
+
+
+def build_bill_head(r1, db, tab, f_muted):
+    """Compact 'Bill No. <next> · Date <today>' labels for the header row."""
+    ctk.CTkLabel(r1, text="Bill No.", text_color="gray",
+                 font=f_muted).pack(side="left", padx=(10, 2))
+    ctk.CTkLabel(r1, text=bill_no_preview(db, tab),
+                 font=ctk.CTkFont(weight="bold")).pack(side="left", padx=2)
+    ctk.CTkLabel(r1, text="Date", text_color="gray",
+                 font=f_muted).pack(side="left", padx=(10, 2))
+    ctk.CTkLabel(r1, text=date.today().strftime("%d-%m-%Y"),
+                 font=f_muted).pack(side="left", padx=2)
+
+
+def build_boxes_entry(r2, on_return):
+    """Boxes entry for wholesale billing (grid view only).
+
+    Returns (label, entry); the view switch packs/pack_forgets them.
+    on_return() runs on <Return>.
+    """
+    lbl = ctk.CTkLabel(r2, text="Boxes")
+    lbl.pack(side="left", padx=(6, 2))
+    e = ctk.CTkEntry(r2, width=60, placeholder_text="boxes")
+    e.pack(side="left", padx=4)
+    e.bind("<Return>", lambda ev: on_return())
+    return lbl, e
+
+
+def build_last_bills_strip(frame, w, f_muted):
+    """'Last Bills :' strip under the totals row; refresh fills the chips."""
+    fr = ctk.CTkFrame(frame, fg_color="transparent")
+    fr.pack(fill="x", pady=(0, 2))
+    ctk.CTkLabel(fr, text="Last Bills :", text_color="gray",
+                 font=f_muted).pack(side="left", padx=(4, 6))
+    box = ctk.CTkFrame(fr, fg_color="transparent")
+    box.pack(side="left", fill="x", expand=True)
+    w["last_bills_box"] = box
+
+
+def refresh_last_bills(billing, w):
+    """Rebuild the Last Bills strip: 5 most recent bills, clickable chips."""
+    box = w.get("last_bills_box")
+    if box is None:
+        return
+    for ch in box.winfo_children():
+        ch.destroy()
+    try:
+        bills = billing.db.list_bills(limit=5)
+    except Exception:
+        bills = []
+    for b in bills:
+        cname = (b.get("customer_name") or "Walk-in").strip() or "Walk-in"
+        txt = f"{cname}:{b['bill_no']}:{money(b['grand_total'])}"
+        ctk.CTkButton(
+            box, text=txt, anchor="w", height=24, fg_color="transparent",
+            text_color=("black", "white"),
+            hover_color=("gray80", "gray25"),
+            command=lambda bid=b["id"]: view_last_bill(billing, bid)).pack(
+                side="left", padx=4)
+
+
+def view_last_bill(billing, bill_id):
+    """Open a Last-Bills chip: invoice preview + print (same as Reprint)."""
+    from print_ui import PrintDialog  # lazy: avoids any import cycle
+    db = billing.db
+    bill = db.get_bill(bill_id)
+    if not bill:
+        return
+    items = db.bill_items(bill_id)
+    for it in items:
+        p = db.get_product(it["product_id"]) if it.get("product_id") else None
+        it["sku"] = (p or {}).get("sku", "")
+    PrintDialog(billing, db, bill, items)

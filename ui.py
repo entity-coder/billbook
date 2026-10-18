@@ -1178,17 +1178,13 @@ class BillingFrame(ctk.CTkFrame):
         meta = ctk.CTkFrame(frame, corner_radius=10, border_width=1,
                             fg_color=self.CARD_BG,
                             border_color=self.CARD_BORDER)
-        meta.pack(fill="x", pady=(2, 8))
-        ctk.CTkLabel(meta, text="Bill details",
-                     font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color="gray").pack(anchor="w", padx=14,
-                                             pady=(8, 0))
+        meta.pack(fill="x", pady=(2, 6))
         r1 = ctk.CTkFrame(meta, fg_color="transparent")
-        r1.pack(fill="x", padx=6, pady=(2, 10))
+        r1.pack(fill="x", padx=8, pady=6)
 
         ctk.CTkLabel(r1, text="Customer *").pack(side="left", padx=(4, 2))
         cust_btn = ctk.CTkButton(r1, text="Walk-in \u2014 F4 to choose",
-                                 width=220, anchor="w", fg_color=("gray80", "gray20"))
+                                 width=170, anchor="w", fg_color=("gray80", "gray20"))
         cust_btn.pack(side="left", padx=4)
 
         ctk.CTkButton(r1, text="+ New", width=60,
@@ -1210,11 +1206,12 @@ class BillingFrame(ctk.CTkFrame):
                                ).pack(side="left", padx=4)
 
         ctk.CTkLabel(r1, text="Bill disc. \u20b9").pack(side="left", padx=(10, 2))
-        disc_e = ctk.CTkEntry(r1, width=90)
+        disc_e = ctk.CTkEntry(r1, width=64)
         disc_e.insert(0, f"{tab.bill_discount:g}" if tab.bill_discount else "")
         disc_e.pack(side="left", padx=4)
         disc_e.bind("<KeyRelease>",
                     lambda e: self._on_disc_change(tab, disc_e, w))
+        grid_billing.build_bill_head(r1, self.db, tab, self.f_muted)
 
         def pick_customer():
             SearchPicker(
@@ -1239,12 +1236,8 @@ class BillingFrame(ctk.CTkFrame):
         qty_e = ctk.CTkEntry(r2, width=80)
         qty_e.insert(0, "1")
         qty_e.pack(side="left", padx=4)
-        boxes_lbl = ctk.CTkLabel(r2, text="Boxes")
-        boxes_lbl.pack(side="left", padx=(6, 2))
-        boxes_e = ctk.CTkEntry(r2, width=60,
-                               placeholder_text="boxes")
-        boxes_e.pack(side="left", padx=4)
-        boxes_e.bind("<Return>", lambda e: self.add_line(tab, w))
+        boxes_lbl, boxes_e = grid_billing.build_boxes_entry(
+            r2, lambda: self.add_line(tab, w))
         ctk.CTkLabel(r2, text="Line disc. \u20b9").pack(side="left", padx=(6, 2))
         ldisc_e = ctk.CTkEntry(r2, width=80)
         ldisc_e.pack(side="left", padx=4)
@@ -1343,6 +1336,8 @@ class BillingFrame(ctk.CTkFrame):
         grand_lbl = ctk.CTkLabel(tot, text="", font=self.f_grand,
                                  text_color=self.ACCENT_TEXT)
         grand_lbl.pack(side="right", padx=12, pady=8)
+
+        grid_billing.build_last_bills_strip(frame, w, self.f_muted)
 
         r4 = ctk.CTkFrame(frame, fg_color="transparent")
         r4.pack(fill="x", pady=4)
@@ -1815,6 +1810,7 @@ class BillingFrame(ctk.CTkFrame):
         tab, w = self.tabs[name]
         self._render_cards(tab, w, flash_idx)
         self._update_totals_footer(tab, w)
+        grid_billing.refresh_last_bills(self, w)
 
     def _update_totals_footer(self, tab, w):
         try:
@@ -1902,8 +1898,8 @@ class BillingFrame(ctk.CTkFrame):
         if printed:
             messagebox.showinfo("Print", pmsg)
         elif not preview:
-            messagebox.showinfo("Print",
-                                f"{pmsg}\n\nPDF saved at:\n{path}")
+            # pmsg already carries reason + saved path + fix hint.
+            messagebox.showinfo("Print", pmsg)
 
     def _tab_bill_preview(self, tab):
         t = tab.totals(self.db)
@@ -2435,17 +2431,24 @@ class CustomersFrame(ctk.CTkFrame):
             win.destroy()
             self.refresh()
             try:
-                from printing import generate_payment_receipt_pdf, open_pdf
+                from printing import (generate_payment_receipt_pdf,
+                                      print_pdf)
                 pay = self.db._one("SELECT * FROM payments WHERE id=?",
                                    (pay_id,))
                 cust = self.db.get_customer(cid)
                 pdf = generate_payment_receipt_pdf(
                     pay, cust, self.db.shop_profile(), self.db.print_prefs())
-                open_pdf(pdf)
-                messagebox.showinfo(
-                    "Payment",
-                    f"Recorded {money(amt)} from {c['name']}.\n"
-                    f"Receipt saved at:\n{pdf}")
+                ok, pmsg = print_pdf(pdf)
+                if ok:
+                    messagebox.showinfo(
+                        "Payment",
+                        f"Recorded {money(amt)} from {c['name']}.\n"
+                        f"Receipt sent to printer.")
+                else:
+                    # Never auto-open the PDF: show reason + path + fix hint.
+                    messagebox.showinfo(
+                        "Payment",
+                        f"Recorded {money(amt)} from {c['name']}.\n\n{pmsg}")
             except Exception as e:  # noqa: BLE001
                 messagebox.showinfo(
                     "Payment",

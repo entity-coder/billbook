@@ -372,6 +372,29 @@ class PrintDialog(ctk.CTkToplevel):
         except Exception as e:
             messagebox.showerror("Print", f"Could not build the invoice: {e}")
 
+    def _print_failed_dialog(self, path, text):
+        """Show a print failure WITHOUT auto-opening the PDF.
+
+        The user reads the reason + saved path and chooses: open the PDF
+        manually, or just close. Nothing opens on its own.
+        """
+        win = ctk.CTkToplevel(self)
+        win.title("Print failed")
+        win.geometry("480x260")
+        win.transient(self)
+        ctk.CTkLabel(win, text="Could not print directly.",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(
+                         pady=(14, 4))
+        ctk.CTkLabel(win, text=text, wraplength=440,
+                     justify="left").pack(padx=14, pady=4)
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(pady=10)
+        ctk.CTkButton(btns, text="Open PDF",
+                      command=lambda: printing.open_pdf(path)).pack(
+                          side="left", padx=6)
+        ctk.CTkButton(btns, text="Close", fg_color="transparent",
+                      command=win.destroy).pack(side="left", padx=6)
+
     def do_print(self):
         p = self.effective_prefs()
         printer = self._printer_choice()
@@ -384,9 +407,10 @@ class PrintDialog(ctk.CTkToplevel):
                     messagebox.showinfo("Print", msg)
                     self.destroy()
                 else:
-                    messagebox.showinfo("Print", f"{msg}\n\nPDF: {path}")
+                    # msg already carries reason + saved path + fix hint.
+                    self._print_failed_dialog(path, msg)
             else:
-                from printing import generate_invoice_pdf, print_pdf, open_pdf
+                from printing import generate_invoice_pdf, print_pdf
                 path = generate_invoice_pdf(self.bill, self.items,
                                             self.db.shop_profile(), p)
                 ok, msg = print_pdf(path, printer=printer, copies=copies)
@@ -394,7 +418,6 @@ class PrintDialog(ctk.CTkToplevel):
                     messagebox.showinfo("Print", msg)
                     self.destroy()
                 else:
-                    open_pdf(path)
-                    messagebox.showinfo("Print", f"{msg}\n\nPDF: {path}")
+                    self._print_failed_dialog(path, msg)
         except Exception as e:
             messagebox.showerror("Print", f"Could not print: {e}")
