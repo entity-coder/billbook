@@ -245,7 +245,7 @@ DEFAULT_SETTINGS = {
     "shop_gstin": "",
     # Print preferences
     "print_accent": "#1f6f43",
-    "print_paper": "A4",            # A4 / thermal
+    "print_paper": "thermal",       # A4 / thermal
     "print_show_gstin": "1",
     "print_show_item_codes": "1",
     "print_show_discounts": "1",
@@ -331,6 +331,19 @@ class DB:
                 self.conn.execute(
                     "ALTER TABLE purchase_items ADD COLUMN expiry_date TEXT "
                     "DEFAULT ''")
+            # 2026-10-18: 80mm thermal is the default paper size now; flip
+            # dbs still on the old seeded "A4" default, once. A user who
+            # later switches back to A4 in Invoice Design keeps their choice.
+            flag = self.conn.execute(
+                "SELECT value FROM settings WHERE key='paper_default_v2'"
+            ).fetchone()
+            if not flag:
+                self.conn.execute(
+                    "UPDATE settings SET value='thermal' "
+                    "WHERE key='print_paper' AND value='A4'")
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO settings (key, value) VALUES "
+                    "('paper_default_v2', '1')")
             self.conn.commit()
         except Exception:
             pass
@@ -369,7 +382,7 @@ class DB:
 
         return {
             "accent": self.get_setting("print_accent") or "#1f6f43",
-            "paper": self.get_setting("print_paper") or "A4",
+            "paper": self.get_setting("print_paper") or "thermal",
             "show_gstin": flag("print_show_gstin"),
             "show_item_codes": flag("print_show_item_codes"),
             "show_discounts": flag("print_show_discounts"),

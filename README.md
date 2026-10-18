@@ -150,7 +150,7 @@ no Chrome extension needed.
     signature lines (A4 only).
   - **Footer**: multi-line **terms & conditions**, thank-you message
     (toggle + editable text).
-  - **Paper & numbering**: default A4 / thermal 80mm, default copies,
+  - **Paper & numbering**: default thermal 80mm (A4 switchable), default copies,
     editable invoice number **prefix** (e.g. `BB-`, `INV/`) — the next bill
     number previews live as you type.
   - Every choice saves to the database and applies to **every invoice from
