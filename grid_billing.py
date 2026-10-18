@@ -77,8 +77,8 @@ class GridPanel(ctk.CTkFrame):
                                                     "to list matches...")
         self.find_e.pack(side="left")
         self.find_e.bind("<KeyRelease>", self._on_find_key)
-        ctk.CTkLabel(find, text="(grid starts empty \u00b7 arrows move \u00b7 "
-                                "Enter picks)",
+        ctk.CTkLabel(find, text="(type to list matches \u00b7 Enter enters "
+                                "the list \u00b7 arrows move \u00b7 Enter picks)",
                      text_color="gray").pack(side="left", padx=8)
 
         self.detail = ctk.CTkLabel(
@@ -237,7 +237,8 @@ class GridPanel(ctk.CTkFrame):
                 self.tv.focus_set()
             return "break"
         if event.keysym == "Return":
-            self._pick_selected()
+            if self._shown:
+                self.tv.focus_set()
             return "break"
         if event.keysym == "Escape":
             self.find_e.delete(0, "end")

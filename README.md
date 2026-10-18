@@ -66,10 +66,11 @@ no Chrome extension needed.
     cleared. Columns **DESCRIPTION | PACKING | STOCK | UNIT | RATE**, and an
     item-detail footer for the highlighted row showing **PurRate, M.R.P.,
     Margin % and Company** ("—" when unknown).
-    **Up/Down** move the highlight, **Enter** picks the product into the
-    normal qty → rate → discount flow, **Esc** in the find box clears the
-    filter, **Down** in the find box jumps into the grid, and **F3** focuses
-    the find box. The grid shows the same low-stock ⚠ warnings billing
+    **Up/Down** move the highlight once you're in the list, **Enter** (or
+    **Down**) in the find box moves focus into the list with the first row
+    highlighted, **Enter** on a row picks the product into the normal qty →
+    rate → discount flow, **Esc** in the find box clears the filter, and
+    **F3** focuses the find box. The grid shows the same low-stock ⚠ warnings billing
     already uses and follows the tab's Wholesale/Retail price mode.
     Under the grid, a **Bill lines** table (ITEM | QTY | UNIT | RATE | DISC
     | AMOUNT) shows everything added to the bill — click a row to select it
