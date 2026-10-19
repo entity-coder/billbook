@@ -37,6 +37,11 @@ no Chrome extension needed.
     entry row (or closes the customer picker), **Ctrl+S** finalize,
     **Ctrl+P** print/preview. Every field is typeable — no mouse needed for
     a full bill.
+  - **Right-side menu + keyboard travel** — the Billing/options menu sits on
+    the right edge of the window. **F10** jumps focus to the menu (press
+    again to jump back), **Up/Down** moves between menu items,
+    **Enter** opens the highlighted screen, **Esc** returns without
+    switching.
   - **Autocomplete dropdown** — typing any letter in the product search
     opens a live dropdown under the field, ranked by relevance
     (name-starts-with → name-contains → SKU match), showing name + SKU +

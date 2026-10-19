@@ -130,11 +130,11 @@ class App(ctk.CTk):
         self.geometry("1280x800")
         self.minsize(1080, 680)
 
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
         self.sidebar = ctk.CTkFrame(self, width=190, corner_radius=0)
-        self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.grid(row=0, column=1, sticky="nsew")
         ctk.CTkLabel(self.sidebar, text="BillBook",
                      font=ctk.CTkFont(size=24, weight="bold")).pack(
                          pady=(18, 2), padx=12)
@@ -165,8 +165,11 @@ class App(ctk.CTk):
             fg_color="#0b5fa5", hover_color="#084a82",
             command=self._on_update_clicked)
 
+        from nav_travel import install_nav_travel
+        install_nav_travel(self)
+
         self.content = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
-        self.content.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
+        self.content.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(0, weight=1)
 
@@ -1898,7 +1901,6 @@ class BillingFrame(ctk.CTkFrame):
         if printed:
             messagebox.showinfo("Print", pmsg)
         elif not preview:
-            # pmsg already carries reason + saved path + fix hint.
             messagebox.showinfo("Print", pmsg)
 
     def _tab_bill_preview(self, tab):
@@ -2445,7 +2447,6 @@ class CustomersFrame(ctk.CTkFrame):
                         f"Recorded {money(amt)} from {c['name']}.\n"
                         f"Receipt sent to printer.")
                 else:
-                    # Never auto-open the PDF: show reason + path + fix hint.
                     messagebox.showinfo(
                         "Payment",
                         f"Recorded {money(amt)} from {c['name']}.\n\n{pmsg}")
