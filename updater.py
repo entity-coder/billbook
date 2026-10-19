@@ -150,8 +150,8 @@ if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto waitloop )
 echo Applying update...
 robocopy "update_staging" "." /E /XD billbook_data update_staging __pycache__ .git dist build /XF apply_update.bat update_log.txt > update_log.txt 2>&1
 echo Rebuilding BillBook.exe (this takes a few minutes)...
-python -m pip install --quiet --upgrade customtkinter pyinstaller reportlab pywin32 >> update_log.txt 2>&1
-pyinstaller --noconfirm --onefile --windowed --name BillBook main.py >> update_log.txt 2>&1
+python -m pip install --quiet --upgrade customtkinter pyinstaller reportlab pywin32 pymupdf pillow >> update_log.txt 2>&1
+pyinstaller --noconfirm --onefile --windowed --name BillBook --hidden-import fitz --hidden-import pymupdf --hidden-import PIL.ImageWin main.py >> update_log.txt 2>&1
 if errorlevel 1 (
   echo UPDATE FAILED - your old version was NOT touched. > update_error.txt
   echo See update_log.txt for details. >> update_error.txt
